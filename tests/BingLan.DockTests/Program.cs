@@ -372,6 +372,42 @@ static void TestDisplayArrivalRules()
         [new PixelRect(1224, 96, 1524, 296)]);
     AssertEqual(new PixelRect(0, 120, 300, 320), avoidReserved[0], "收拢应避开已回原位卡片的位置");
 
+    // 屏满放不下时先按比例缩小找空位；顶部整条被占，只有缩到 70% 才放得下。
+    var shrink = DisplayArrivalRules.Gather(
+        [new PixelRect(1920, 700, 2520, 1000)],
+        [primary],
+        primary,
+        [new PixelRect(0, 0, 1536, 600)],
+        [(200, 150)]);
+    AssertEqual(new PixelRect(1104, 600, 1524, 810), shrink[0], "放不下时应缩小到能容身的尺寸并避让占位");
+    AssertEqual(true, shrink[0].Width < 600, "收拢后的卡片宽度应已缩小");
+
+    // 下限之内仍放不下时退回贴边全尺寸，允许重叠但保证完全可见。
+    var floorKept = DisplayArrivalRules.Gather(
+        [new PixelRect(1920, 700, 2520, 1300)],
+        [primary],
+        primary,
+        [new PixelRect(0, 0, 1536, 600)],
+        [(500, 450)]);
+    AssertEqual(new PixelRect(936, 224, 1536, 824), floorKept[0], "高于下限仍放不下时应退回贴边全尺寸");
+
+    // 不传下限时保持原行为：只按原尺寸找位，不做缩放。
+    var noShrinkByDefault = DisplayArrivalRules.Gather(
+        [new PixelRect(1920, 700, 2520, 1000)],
+        [primary],
+        primary,
+        [new PixelRect(0, 0, 1536, 600)]);
+    AssertEqual(new PixelRect(936, 524, 1536, 824), noShrinkByDefault[0], "未传下限时不应缩放，退回贴边全尺寸");
+
+    AssertThrows<ArgumentException>(
+        () => DisplayArrivalRules.Gather(
+            [new PixelRect(0, 0, 300, 200)],
+            [primary],
+            primary,
+            null,
+            []),
+        "下限数量与卡片数量不一致时应报参数错误");
+
     var oversized = DisplayArrivalRules.Gather(
         [new PixelRect(1920, 96, 3420, 1296)],
         [new PixelRect(0, 0, 1000, 600)],

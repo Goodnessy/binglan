@@ -136,12 +136,12 @@ internal static class WindowScreenRecovery
             }
         }
 
-        var entries = new List<(nint Handle, PixelRect Current)>();
+        var entries = new List<(nint Handle, PixelRect Current, Window Window)>();
         foreach (var window in arrivals)
         {
             if (ReadRect(window) is { } current)
             {
-                entries.Add((new WindowInteropHelper(window).Handle, current));
+                entries.Add((new WindowInteropHelper(window).Handle, current, window));
             }
         }
         if (entries.Count == 0)
@@ -149,12 +149,24 @@ internal static class WindowScreenRecovery
             return;
         }
 
-        var primary = monitors.FirstOrDefault(monitor => monitor.IsPrimary) ?? monitors[0];
+        // The card's own WPF minimum, in pixels of the primary monitor, is how far an
+        // overcrowded gather may shrink it; smaller would be pushed back by the window.
+        var primaryMonitor = monitors.FirstOrDefault(monitor => monitor.IsPrimary) ?? monitors[0];
+        var scale = primaryMonitor.Dpi / 96d;
+        (int Width, int Height)? MinimumOf(Window window) =>
+            window.MinWidth > 0 && window.MinHeight > 0
+                ? ((int)Math.Ceiling(window.MinWidth * scale), (int)Math.Ceiling(window.MinHeight * scale))
+                : null;
+        var minimumSizes = entries
+            .Select(entry => MinimumOf(entry.Window))
+            .ToList();
+
         var targets = DisplayArrivalRules.Gather(
             entries.Select(entry => entry.Current).ToList(),
             monitors.Select(monitor => monitor.WorkingArea).ToArray(),
-            primary.WorkingArea,
-            reserved);
+            primaryMonitor.WorkingArea,
+            reserved,
+            minimumSizes);
         for (var index = 0; index < entries.Count; index++)
         {
             var target = targets[index];
