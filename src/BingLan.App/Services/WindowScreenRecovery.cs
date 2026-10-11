@@ -97,10 +97,88 @@ internal static class WindowScreenRecovery
         return moved;
     }
 
+    /// <summary>Whether the placement remembers a spot for the arrangement of monitors now in use.</summary>
+    internal static bool HasCurrentLayout(WindowPlacement placement) =>
+        DisplayLayoutRules.TryRecall(placement, CurrentLayout(), out _);
+
+    /// <summary>
+    /// Gathers cards that meet an arrangement of monitors for the first time: cards
+    /// without a remembered spot move fully into the nearest work area, cascaded so
+    /// they do not stack on one another or on the settled cards. Works while a card
+    /// is hidden, so a monitor lost in the meantime does not leave it off-screen
+    /// when it is shown again.
+    /// </summary>
+    internal static void GatherOnArrival(IEnumerable<Window> arrivals, IEnumerable<Window> settled)
+    {
+        var monitors = MonitorCatalog.GetAll();
+        if (monitors.Count == 0)
+        {
+            return;
+        }
+
+        PixelRect? ReadRect(Window window)
+        {
+            var handle = new WindowInteropHelper(window).Handle;
+            if (handle == 0 || !DockNativeMethods.GetWindowRect(handle, out var native))
+            {
+                return null;
+            }
+            var rect = new PixelRect(native.Left, native.Top, native.Right, native.Bottom);
+            return rect.HasArea ? rect : null;
+        }
+
+        var reserved = new List<PixelRect>();
+        foreach (var window in settled)
+        {
+            if (ReadRect(window) is { } spot)
+            {
+                reserved.Add(spot);
+            }
+        }
+
+        var entries = new List<(nint Handle, PixelRect Current)>();
+        foreach (var window in arrivals)
+        {
+            if (ReadRect(window) is { } current)
+            {
+                entries.Add((new WindowInteropHelper(window).Handle, current));
+            }
+        }
+        if (entries.Count == 0)
+        {
+            return;
+        }
+
+        var primary = monitors.FirstOrDefault(monitor => monitor.IsPrimary) ?? monitors[0];
+        var targets = DisplayArrivalRules.Gather(
+            entries.Select(entry => entry.Current).ToList(),
+            monitors.Select(monitor => monitor.WorkingArea).ToArray(),
+            primary.WorkingArea,
+            reserved);
+        for (var index = 0; index < entries.Count; index++)
+        {
+            var target = targets[index];
+            if (target == entries[index].Current)
+            {
+                continue;
+            }
+            NativeMethods.SetWindowPos(
+                entries[index].Handle,
+                0,
+                target.Left,
+                target.Top,
+                target.Width,
+                target.Height,
+                NativeMethods.SwpNoZOrder | NativeMethods.SwpNoActivate);
+        }
+    }
+
     internal static bool EnsureOnScreen(Window window)
     {
         var handle = new WindowInteropHelper(window).Handle;
-        if (handle == 0 || !window.IsVisible || !DockNativeMethods.GetWindowRect(handle, out var native))
+        // Hidden cards are recovered too: a monitor may have been unplugged while the
+        // desktop was toggled away, and the spot it comes back to must already be fixed.
+        if (handle == 0 || !DockNativeMethods.GetWindowRect(handle, out var native))
         {
             return false;
         }

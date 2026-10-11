@@ -6,6 +6,7 @@ var failures = new List<string>();
 Run("Dock 四边几何与负坐标", TestDockGeometry);
 Run("Dock 非法厚度", TestInvalidThickness);
 Run("断开的显示器位置恢复", TestPlacementRecovery);
+Run("新排列首次出现的收拢布局", TestDisplayArrivalRules);
 Run("卡片让出任务栏与 Dock 占用的屏幕边缘", TestKeepOutOfReservedEdges);
 Run("组件拖动吸附与参考线", TestSnapRules);
 Run("窗口身份优先级", TestIdentityPriority);
@@ -325,6 +326,70 @@ static void TestPlacementRecovery()
         PerformanceSamplingMode.Normal,
         PerformanceSamplingRules.ResolveMode(fullScreenInFront: false, desktopHidden: false),
         "普通状态应保持正常采样");
+}
+
+static void TestDisplayArrivalRules()
+{
+    var primary = new PixelRect(0, 0, 1536, 824);
+    var kept = new PixelRect(96, 96, 396, 296);
+
+    // 两张卡在已拔掉的右侧屏上，一张半出剩余屏的右下角。
+    var targets = DisplayArrivalRules.Gather(
+        [
+            new PixelRect(1920, 96, 2220, 296),
+            new PixelRect(1920, 480, 2220, 680),
+            new PixelRect(1300, 700, 1600, 900),
+            kept
+        ],
+        [primary],
+        primary);
+
+    AssertEqual(kept, targets[3], "已在工作区内的卡片应保持原位");
+    AssertEqual(new PixelRect(1224, 96, 1524, 296), targets[0], "拔掉屏上的卡片应收拢到最近工作区边缘");
+    AssertEqual(new PixelRect(1224, 480, 1524, 680), targets[1], "第二张卡应收拢到下方且不与第一张堆叠");
+    AssertEqual(new PixelRect(408, 0, 708, 200), targets[2], "半出界卡片应收拢到不压任何卡片的位置");
+    foreach (var target in targets)
+    {
+        AssertEqual(
+            true,
+            target.Left >= primary.Left && target.Right <= primary.Right
+            && target.Top >= primary.Top && target.Bottom <= primary.Bottom,
+            $"收拢后的卡片应完全在工作区内：{target}");
+    }
+
+    var stacked = DisplayArrivalRules.Gather(
+        [new PixelRect(1920, 96, 2220, 296), new PixelRect(1920, 96, 2220, 296)],
+        [primary],
+        primary);
+    AssertEqual(false, stacked[0].Intersects(stacked[1]), "原位重叠的两张卡收拢后应错开");
+    AssertEqual(true, stacked[0].Top <= stacked[1].Top, "收拢应保持卡片原有的阅读顺序");
+
+    // 已回原位的卡不进收拢列表（reserved），但收拢落位必须避让它们的占位。
+    var avoidReserved = DisplayArrivalRules.Gather(
+        [new PixelRect(1920, 96, 2220, 296)],
+        [primary],
+        primary,
+        [new PixelRect(1224, 96, 1524, 296)]);
+    AssertEqual(new PixelRect(0, 120, 300, 320), avoidReserved[0], "收拢应避开已回原位卡片的位置");
+
+    var oversized = DisplayArrivalRules.Gather(
+        [new PixelRect(1920, 96, 3420, 1296)],
+        [new PixelRect(0, 0, 1000, 600)],
+        new PixelRect(0, 0, 1000, 600));
+    AssertEqual(new PixelRect(0, 0, 1000, 600), oversized[0], "大于工作区的卡片应收拢为工作区大小");
+
+    var fallback = DisplayArrivalRules.Gather(
+        [new PixelRect(3000, 2000, 3300, 2200)],
+        [],
+        new PixelRect(0, 0, 1920, 1040));
+    AssertEqual(new PixelRect(1608, 840, 1908, 1040), fallback[0], "没有工作区快照时应收拢进回退工作区");
+
+    AssertThrows<ArgumentException>(
+        () => DisplayArrivalRules.Gather([new PixelRect(0, 0, 10, 10)], [], default),
+        "没有可用工作区且无回退时应报参数错误");
+    AssertThrows<ArgumentException>(
+        () => DisplayArrivalRules.Gather([default], [primary], primary),
+        "零面积卡片应报参数错误");
 }
 
 static void TestSnapRules()

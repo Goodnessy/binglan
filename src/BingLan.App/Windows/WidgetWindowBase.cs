@@ -459,6 +459,10 @@ public class WidgetWindowBase : Window
     internal bool RestoreDisplayLayout() =>
         _placement is not null && WindowScreenRecovery.RestoreLayout(this, _placement);
 
+    /// <summary>Whether this card remembers a spot for the arrangement of monitors now in use.</summary>
+    internal bool HasDisplayLayoutMemory() =>
+        _placement is not null && WindowScreenRecovery.HasCurrentLayout(_placement);
+
     public void RefreshBackdrop()
     {
         if (_source is null || _source.IsDisposed)

@@ -104,7 +104,7 @@ public static class PlacementResolver
             && visibleHeight >= Math.Min(minimumVisiblePixels, desired.Height);
     }
 
-    private static PixelRect ClampInside(PixelRect desired, PixelRect target)
+    internal static PixelRect ClampInside(PixelRect desired, PixelRect target)
     {
         var width = Math.Min(desired.Width, target.Width);
         var height = Math.Min(desired.Height, target.Height);
@@ -113,7 +113,7 @@ public static class PlacementResolver
         return new PixelRect(left, top, left + width, top + height);
     }
 
-    private static long DistanceSquared(PixelRect first, PixelRect second)
+    internal static long DistanceSquared(PixelRect first, PixelRect second)
     {
         var horizontal = first.Right < second.Left
             ? (long)second.Left - first.Right
