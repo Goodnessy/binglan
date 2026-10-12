@@ -792,9 +792,9 @@ public sealed class WidgetCoordinator : IDisposable
             RaiseCardsAboveDesktop();
             return;
         }
-        foreach (var window in _windows.Where(window => window.IsVisible))
+        foreach (var window in _windows)
         {
-            window.SendToBack();
+            window.ReturnBelowOrdinaryWindows();
         }
     }
 

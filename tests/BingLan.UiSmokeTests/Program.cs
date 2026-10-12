@@ -2326,10 +2326,20 @@ internal static class Program
             Assert(IsWindowVisible(handle), "提升后组件应保持可见");
             GetWindowRect(handle, out var raised);
             Assert(before.Left == raised.Left && before.Top == raised.Top &&
-                before.Right == raised.Right && before.Bottom == raised.Bottom,
+                   before.Right == raised.Right && before.Bottom == raised.Bottom,
                 "提升只改 Z 序，不应移动或缩放组件");
 
+            // Regression: interacting with the card (dragging it, clicking a box's
+            // collapse toggle) activates it, and the later Deactivated sends it back —
+            // during the raised state that must not drop it behind the desktop surface,
+            // where it would stay hidden until the next "show desktop" toggle.
             window.SendToBack();
+            Pump();
+            Assert((GetWindowLongPtr(handle, GwlExStyle) & WsExTopmost) != 0,
+                "显示桌面期间组件失活回落不应把它压回桌面表面之下");
+            Assert(IsWindowVisible(handle), "显示桌面期间组件应保持可见");
+
+            window.ReturnBelowOrdinaryWindows();
             PumpUntil(() => (GetWindowLongPtr(handle, GwlExStyle) & WsExTopmost) == 0,
                 "回落后组件应离开置顶带");
             Assert(IsWindowVisible(handle), "回落后组件应保持可见");

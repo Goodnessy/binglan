@@ -1170,8 +1170,36 @@ public class WidgetWindowBase : Window
         internal bool Moving { get; set; }
     }
 
-    /// <summary>Puts the card behind all ordinary windows without activating it.</summary>
+    // Set while the shell shows the desktop and the card sits in the topmost band.
+    private bool _raisedAboveDesktop;
+
+    /// <summary>
+    /// Puts the card behind all ordinary windows without activating it. Does nothing
+    /// while the card is raised for "show desktop": the bottom of the ordinary band
+    /// is behind the raised desktop surface there, so dropping would hide the card
+    /// until the next toggle. <see cref="ReturnBelowOrdinaryWindows"/> ends the state.
+    /// </summary>
     internal void SendToBack()
+    {
+        if (_raisedAboveDesktop)
+        {
+            return;
+        }
+        SendToBackCore();
+    }
+
+    /// <summary>
+    /// Ends the raised state and puts the card back below every ordinary window, for
+    /// when the shell stops showing the desktop. Also runs for hidden cards, so a
+    /// card hidden while raised cannot keep the state and float when re-shown.
+    /// </summary>
+    internal void ReturnBelowOrdinaryWindows()
+    {
+        _raisedAboveDesktop = false;
+        SendToBackCore();
+    }
+
+    private void SendToBackCore()
     {
         if (_source is { IsDisposed: false } source)
         {
@@ -1197,6 +1225,7 @@ public class WidgetWindowBase : Window
     /// </summary>
     internal void RaiseAboveDesktop(nint insertAfter)
     {
+        _raisedAboveDesktop = true;
         if (_source is { IsDisposed: false } source)
         {
             NativeMethods.SetWindowPos(
