@@ -797,15 +797,7 @@ public partial class FileBoxWindow : WidgetWindowBase
             Path = mapping.Path;
             IsShellEntry = FileMappingService.IsShellEntry(mapping.Path);
             IsMissing = FileMappingService.IsMissing(mapping);
-            Name = string.IsNullOrWhiteSpace(mapping.Title)
-                ? System.IO.Path.GetFileName(mapping.Path.TrimEnd(
-                    System.IO.Path.DirectorySeparatorChar,
-                    System.IO.Path.AltDirectorySeparatorChar))
-                : mapping.Title;
-            if (string.IsNullOrEmpty(Name))
-            {
-                Name = mapping.Path;
-            }
+            Name = FileMappingService.GetDisplayName(mapping);
             Icon = icon;
         }
 
