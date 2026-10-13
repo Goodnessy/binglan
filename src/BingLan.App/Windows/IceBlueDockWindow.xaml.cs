@@ -45,6 +45,7 @@ public partial class IceBlueDockWindow : Window
     private readonly DockState _state;
     private readonly WindowCatalog _catalog = new();
     private readonly WindowEventWatcher _watcher;
+    private readonly MaximizeStateWatcher _maximizeWatcher;
     private readonly DispatcherTimer _foregroundTimer;
     private DockAutoHideState _autoHide = new();
     private readonly Dictionary<string, DockAppVisual> _visuals = new(StringComparer.OrdinalIgnoreCase);
@@ -88,6 +89,17 @@ public partial class IceBlueDockWindow : Window
         _morph.CollapseCompleted += OnCollapseMorphCompleted;
         _watcher = new WindowEventWatcher(Dispatcher);
         _watcher.SnapshotInvalidated += RefreshWindows;
+        // The poll cannot catch the maximize click itself; the accessibility event
+        // can, so the reservation release and the collapse start on the same beat as
+        // the window's own maximize animation.
+        _maximizeWatcher = new MaximizeStateWatcher(Dispatcher);
+        _maximizeWatcher.MaximizedStateChanged += () =>
+        {
+            if (!_closing)
+            {
+                UpdateForForeground();
+            }
+        };
         _foregroundTimer = new DispatcherTimer(
             FullScreenCheckInterval,
             DispatcherPriority.Background,
@@ -241,6 +253,7 @@ public partial class IceBlueDockWindow : Window
         };
         CreateHandleWindow();
         _watcher.Start();
+        _maximizeWatcher.Start();
         ApplyState();
         RefreshWindows();
     }
@@ -292,6 +305,7 @@ public partial class IceBlueDockWindow : Window
         }
         _foregroundTimer.Stop();
         _watcher.Dispose();
+        _maximizeWatcher.Dispose();
         _appBar?.Dispose();
         _appBar = null;
         _handleWindow?.Close();
@@ -942,7 +956,11 @@ public partial class IceBlueDockWindow : Window
                 && cursor.Y >= effectiveBounds.Top && cursor.Y < effectiveBounds.Bottom)
             || pointerOverHandle;
         var input = new DockAutoHideInput(
-            WindowOverlapsDock: overlaps,
+            // This input is only built while smart-hiding, where a maximized window on
+            // this monitor is guaranteed to take over the strip the moment the
+            // reservation releases — count it as overlap before its animated resize
+            // has covered the pixels, or the collapse would lag the maximize click.
+            WindowOverlapsDock: overlaps || maximizedOnDockMonitor,
             ForegroundIsFullScreen: trueFullScreen,
             PointerInRevealZone: DockRevealRules.IsInRevealZone(
                 cursor.X,
@@ -952,7 +970,7 @@ public partial class IceBlueDockWindow : Window
                 revealDepth),
             PointerOverDock: pointerOverDock,
             InteractionActive: _menuOpen || _dragging || DateTimeOffset.UtcNow < _attentionRevealUntil,
-            OverlapIsMaximizedWindow: maximizedOnDockMonitor && overlaps);
+            OverlapIsMaximizedWindow: maximizedOnDockMonitor);
         if (_trueFullScreenForeground && _morph.IsCollapsing)
         {
             // Nothing may animate over a truly full-screen app: land the pending

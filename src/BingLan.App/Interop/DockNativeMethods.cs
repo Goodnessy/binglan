@@ -22,6 +22,7 @@ internal static class DockNativeMethods
     internal const uint EventObjectCreate = 0x8000;
     internal const uint EventObjectHide = 0x8003;
     internal const uint EventObjectNameChange = 0x800C;
+    internal const uint EventObjectStateChange = 0x800A;
     internal const uint EventObjectCloaked = 0x8017;
     internal const uint EventObjectUncloaked = 0x8018;
     internal const uint WineventOutOfContext = 0x0000;
