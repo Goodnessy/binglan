@@ -93,7 +93,7 @@ public partial class IceBlueDockWindow : Window
         // can, so the reservation release and the collapse start on the same beat as
         // the window's own maximize animation.
         _maximizeWatcher = new MaximizeStateWatcher(Dispatcher);
-        _maximizeWatcher.MaximizedStateChanged += () =>
+        _maximizeWatcher.TopLevelStateChanged += () =>
         {
             if (!_closing)
             {

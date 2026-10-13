@@ -4,12 +4,14 @@ using BingLan.App.Interop;
 namespace BingLan.App.Dock;
 
 /// <summary>
-/// Immediate notice that a top-level window became (or stays) maximized, via the
-/// accessibility event stream — the 150ms foreground poll cannot react to the
-/// maximize click itself, which reads as a pause before the dock collapses. Only
-/// state changes of windows that are currently zoomed pass the filter; everything
-/// else keeps waiting for the poll. The event is raised on the dispatcher the
-/// watcher was started on.
+/// Immediate notice that a top-level window changed state, via the accessibility
+/// event stream — the 150ms foreground poll cannot react to the maximize click
+/// itself, which reads as a pause before the dock collapses. No prediction is done
+/// here (not even IsZoomed): the earliest state events of a maximize can arrive
+/// before the zoomed style is applied, so pre-filtering would drop them and fall
+/// back to the poll. The receiver's own foreground evaluation is cheap and decides
+/// what actually happened. The event is raised on the dispatcher of the thread the
+/// watcher was created on.
 /// </summary>
 internal sealed class MaximizeStateWatcher : IDisposable
 {
@@ -24,8 +26,8 @@ internal sealed class MaximizeStateWatcher : IDisposable
         _callback = OnWinEvent;
     }
 
-    /// <summary>Raised on the dispatcher thread whenever a zoomed window changes state.</summary>
-    internal event Action? MaximizedStateChanged;
+    /// <summary>Raised on the dispatcher thread whenever a top-level window changes state.</summary>
+    internal event Action? TopLevelStateChanged;
 
     internal void Start()
     {
@@ -77,12 +79,11 @@ internal sealed class MaximizeStateWatcher : IDisposable
         if (_disposed
             || window == 0
             || objectId != DockNativeMethods.ObjidWindow
-            || childId != 0
-            || !DockNativeMethods.IsZoomed(window))
+            || childId != 0)
         {
             return;
         }
 
-        _dispatcher.BeginInvoke(DispatcherPriority.Normal, () => MaximizedStateChanged?.Invoke());
+        _dispatcher.BeginInvoke(DispatcherPriority.Normal, () => TopLevelStateChanged?.Invoke());
     }
 }
