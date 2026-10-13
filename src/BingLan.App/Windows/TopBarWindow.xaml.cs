@@ -146,7 +146,7 @@ public sealed partial class TopBarWindow : Window
     private Popup? _searchFlyout;
     private Panel? _searchRows;
     private readonly DispatcherTimer _searchDebounce;
-    private readonly Dictionary<string, ImageSource?> _searchIconCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, ImageSource?> _searchIconCache = new(StringComparer.OrdinalIgnoreCase);
     private IReadOnlyList<TopBarSearchCandidate> _searchCandidates = [];
     private List<TopBarSearchCandidate> _searchResults = [];
     private readonly List<Border> _searchRowBorders = [];
@@ -1267,7 +1267,9 @@ public sealed partial class TopBarWindow : Window
         {
             if (!_searchActive)
             {
-                BeginSearchSession();
+                // Out of the mouse message itself: switching activation from inside
+                // WM_LBUTTONDOWN processing is the classic input-deadlock trap.
+                Dispatcher.BeginInvoke(BeginSearchSession, DispatcherPriority.Input);
             }
         };
 
@@ -1284,6 +1286,7 @@ public sealed partial class TopBarWindow : Window
         var host = new Border
         {
             Width = SearchBoxWidth,
+            MinWidth = 140,
             Height = Math.Clamp(_state.Height - 10d, 18d, 30d),
             CornerRadius = new CornerRadius(6),
             Background = new SolidColorBrush(Color.FromArgb(38, 255, 255, 255)),
@@ -1320,6 +1323,10 @@ public sealed partial class TopBarWindow : Window
             ((DockPanel)host.Child).Children[0],
             System.Windows.Controls.Dock.Left);
 
+        // A narrow centre gap (small screen, wide modules) must clip the box, not push
+        // it under the screen edge.
+        CenterHost.SizeChanged += (_, _) =>
+            host.Width = Math.Min(SearchBoxWidth, Math.Max(140, CenterHost.ActualWidth - 16));
         _searchHost = host;
         _searchBox = box;
         _searchPlaceholder = placeholder;
@@ -1695,7 +1702,11 @@ public sealed partial class TopBarWindow : Window
             // A failed foreground grab leaves a session without keyboard input; the
             // next Escape or outside click still ends it cleanly.
         }
-        _searchBox?.Focus();
+        if (_searchBox is { } box)
+        {
+            box.Focus();
+            box.CaretIndex = box.Text.Length;
+        }
         // The fast tick keeps the outside-watch prompt while the flyout can be open.
         _foregroundTimer.Interval = SmartHideCheckInterval;
         LoadSearchCandidates();

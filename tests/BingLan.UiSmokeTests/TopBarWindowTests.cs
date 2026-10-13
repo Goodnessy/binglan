@@ -576,6 +576,20 @@ internal static class TopBarWindowTests
             Assert(!bar.SearchSessionActive, "Escape 应结束会话");
             style = (long)GetWindowLongPtr(handle, GwlExStyle);
             Assert((style & WsExNoActivateFlag) != 0, "会话结束应恢复永不激活");
+
+            // A click on the box starts the session too, deferred off the mouse
+            // message; the deferred begin must survive a dispatcher pass.
+            bar.SearchBox!.RaiseEvent(new System.Windows.Input.MouseButtonEventArgs(
+                System.Windows.Input.Mouse.PrimaryDevice,
+                0,
+                System.Windows.Input.MouseButton.Left)
+            {
+                RoutedEvent = UIElement.PreviewMouseLeftButtonDownEvent
+            });
+            Assert(WaitUntil(pump, () => bar.SearchSessionActive), "点击搜索框应开始会话");
+            PressKey(bar.SearchBox, System.Windows.Input.Key.Escape);
+            pump();
+            Assert(!bar.SearchSessionActive, "再次 Escape 应结束会话");
         }
         finally
         {
