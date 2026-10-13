@@ -505,7 +505,12 @@ public static class FileMappingService
     public static string GetDisplayName(FileMappingState item) =>
         string.IsNullOrWhiteSpace(item.Title) ? GetDisplayName(item.Path) : item.Title;
 
-    private static string GetDisplayName(string path)
+    /// <summary>Whether the path's extension marks a launcher (shortcut, program or
+    /// script), the way the desktop's own grouping classifies applications.</summary>
+    public static bool IsLauncherName(string path) =>
+        ApplicationExtensions.Contains(Path.GetExtension(path));
+
+    public static string GetDisplayName(string path)
     {
         var name = Path.GetFileName(path.TrimEnd(
             Path.DirectorySeparatorChar,

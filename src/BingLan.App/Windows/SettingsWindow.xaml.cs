@@ -1,6 +1,7 @@
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Threading;
 using BingLan.App.Dock;
 using BingLan.App.Themes;
@@ -8,8 +9,10 @@ using BingLan.Core.Dock;
 using BingLan.Core.Models;
 using BingLan.Core.Themes;
 using BingLan.Core.Services;
+using BingLan.Core.TopBar;
 using Button = System.Windows.Controls.Button;
 using CheckBox = System.Windows.Controls.CheckBox;
+using KeyEventArgs = System.Windows.Input.KeyEventArgs;
 using RadioButton = System.Windows.Controls.RadioButton;
 
 namespace BingLan.App.Windows;
@@ -42,6 +45,7 @@ public partial class SettingsWindow : Window
     private readonly SettingsMaintenance _maintenance;
     private readonly TopBarState? _topBarState;
     private readonly Action? _applyTopBar;
+    private readonly Func<string, bool>? _probeTopBarSearchHotkey;
     private DesktopComponentSettingsEntry? _selectedComponentEntry;
     private CancellationTokenSource? _searchCancellation;
     private bool _loadingExperience;
@@ -93,7 +97,8 @@ public partial class SettingsWindow : Window
         Func<(TaskbarMode ActiveMode, string Problem)>? taskbarStatus = null,
         SettingsMaintenance? maintenance = null,
         TopBarState? topBarState = null,
-        Action? applyTopBar = null)
+        Action? applyTopBar = null,
+        Func<string, bool>? probeTopBarSearchHotkey = null)
     {
         AccessibilityThemeManager.EnsureInitialized();
         _citySearchService = citySearchService;
@@ -113,6 +118,7 @@ public partial class SettingsWindow : Window
         _maintenance = maintenance ?? new SettingsMaintenance();
         _topBarState = topBarState;
         _applyTopBar = applyTopBar;
+        _probeTopBarSearchHotkey = probeTopBarSearchHotkey;
 
         InitializeComponent();
         SourceInitialized += (_, _) => IsBackdropActive = SettingsBackdrop.Apply(this);
@@ -1733,6 +1739,8 @@ public partial class SettingsWindow : Window
             TopBarVolumeCheckBox.IsChecked = state.Modules.Volume;
             TopBarNetworkCheckBox.IsChecked = state.Modules.Network;
             TopBarBatteryCheckBox.IsChecked = state.Modules.Battery;
+            TopBarSearchCheckBox.IsChecked = state.Modules.Search;
+            LoadTopBarSearchHotkey();
 
             TopBarMonitorComboBox.Items.Clear();
             foreach (var monitor in MonitorCatalog.GetAll())
@@ -1780,12 +1788,139 @@ public partial class SettingsWindow : Window
         state.Modules.Volume = TopBarVolumeCheckBox.IsChecked == true;
         state.Modules.Network = TopBarNetworkCheckBox.IsChecked == true;
         state.Modules.Battery = TopBarBatteryCheckBox.IsChecked == true;
+        state.Modules.Search = TopBarSearchCheckBox.IsChecked == true;
         if (TopBarMonitorComboBox.SelectedItem is ComboBoxItem { Tag: string deviceName })
         {
             state.MonitorDeviceName = deviceName;
         }
         ApplyTopBarChange(state.IsEnabled ? "已应用" : "顶端信息条已关闭");
     }
+
+    // ---------------------------------------------------------------- 顶栏搜索热键
+
+    /// <summary>
+    /// A click-to-record capture: the next modifier-plus-key press becomes the search
+    /// hotkey. Bare keys are refused (they would swallow typing system-wide) and the
+    /// optional probe rejects combinations another program already owns.
+    /// </summary>
+    private bool _recordingSearchHotkey;
+
+    private void LoadTopBarSearchHotkey()
+    {
+        if (_topBarState is not { } state)
+        {
+            return;
+        }
+        TopBarSearchHotkeyHint.Text = string.Empty;
+        TopBarSearchHotkeyButton.Content = TopBarSearchRules.ParseHotkey(state.SearchHotkey) is { } binding
+            ? TopBarSearchRules.FormatHotkey(binding)
+            : state.SearchHotkey;
+    }
+
+    private void TopBarSearchHotkey_Click(object sender, RoutedEventArgs e)
+    {
+        if (_topBarState is null)
+        {
+            return;
+        }
+        _recordingSearchHotkey = !_recordingSearchHotkey;
+        if (_recordingSearchHotkey)
+        {
+            TopBarSearchHotkeyHint.Text = string.Empty;
+            TopBarSearchHotkeyButton.Content = "按下组合键…";
+            TopBarSearchHotkeyButton.Focus();
+        }
+        else
+        {
+            LoadTopBarSearchHotkey();
+        }
+    }
+
+    private void TopBarSearchHotkey_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (!_recordingSearchHotkey || _topBarState is not { } state)
+        {
+            return;
+        }
+        e.Handled = true;
+        // With Alt held the real key arrives on SystemKey.
+        var key = e.Key == Key.System ? e.SystemKey : e.Key;
+        if (key is Key.Escape)
+        {
+            StopSearchHotkeyRecording(state);
+            return;
+        }
+        if (key is Key.LeftCtrl or Key.RightCtrl or Key.LeftAlt or Key.RightAlt
+            or Key.LeftShift or Key.RightShift or Key.LWin or Key.RWin or Key.None)
+        {
+            return;
+        }
+        if (HotkeyToken(key) is not { } token)
+        {
+            TopBarSearchHotkeyHint.Text = "这个键不能作为热键主键";
+            return;
+        }
+        var parts = new List<string>(5);
+        if (Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
+        {
+            parts.Add("Ctrl");
+        }
+        if (Keyboard.Modifiers.HasFlag(ModifierKeys.Alt))
+        {
+            parts.Add("Alt");
+        }
+        if (Keyboard.Modifiers.HasFlag(ModifierKeys.Shift))
+        {
+            parts.Add("Shift");
+        }
+        if (Keyboard.Modifiers.HasFlag(ModifierKeys.Windows))
+        {
+            parts.Add("Win");
+        }
+        if (parts.Count == 0)
+        {
+            TopBarSearchHotkeyHint.Text = "需要至少一个修饰键（Ctrl/Alt/Shift/Win）";
+            return;
+        }
+        parts.Add(token);
+        var text = string.Join("+", parts);
+        if (TopBarSearchRules.ParseHotkey(text) is null)
+        {
+            TopBarSearchHotkeyHint.Text = "组合无效";
+            return;
+        }
+        if (_probeTopBarSearchHotkey?.Invoke(text) == false)
+        {
+            TopBarSearchHotkeyHint.Text = "该组合键已被其他程序占用";
+            return;
+        }
+        state.SearchHotkey = text;
+        StopSearchHotkeyRecording(state);
+        ApplyTopBarChange("已更新搜索热键");
+    }
+
+    private void TopBarSearchHotkey_LostKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e)
+    {
+        if (_recordingSearchHotkey && _topBarState is { } state)
+        {
+            StopSearchHotkeyRecording(state);
+        }
+    }
+
+    private void StopSearchHotkeyRecording(TopBarState state)
+    {
+        _recordingSearchHotkey = false;
+        LoadTopBarSearchHotkey();
+    }
+
+    private static string? HotkeyToken(Key key) => key switch
+    {
+        >= Key.A and <= Key.Z => key.ToString(),
+        >= Key.D0 and <= Key.D9 => ((int)key - (int)Key.D0).ToString(),
+        >= Key.F1 and <= Key.F24 => key.ToString(),
+        Key.Space => "Space",
+        _ => null
+    };
 
     private void LoadTopBarLook()
     {

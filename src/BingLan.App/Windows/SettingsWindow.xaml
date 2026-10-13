@@ -1319,7 +1319,30 @@
                                           AutomationProperties.Name="网络模块" Checked="TopBarSetting_Changed" Unchecked="TopBarSetting_Changed"/>
                                 <CheckBox x:Name="TopBarBatteryCheckBox" Content="电量" Margin="0,6,24,6"
                                           AutomationProperties.Name="电量模块" Checked="TopBarSetting_Changed" Unchecked="TopBarSetting_Changed"/>
+                                <CheckBox x:Name="TopBarSearchCheckBox" Content="搜索" Margin="0,6,24,6"
+                                          AutomationProperties.Name="搜索模块" Checked="TopBarSetting_Changed" Unchecked="TopBarSetting_Changed"/>
                             </WrapPanel>
+                        </local:SettingsGroup>
+
+                        <local:SettingsGroup>
+                            <local:SettingsRow Glyph="&#xE721;" GlyphBrush="{DynamicResource SettingsIconTealBrush}" Header="搜索热键"
+                                               Description="聚焦/收起顶栏搜索的全局组合键，需至少一个修饰键（Ctrl/Alt/Shift/Win）；关闭搜索模块后热键同时注销">
+                                <StackPanel Orientation="Horizontal">
+                                    <Button x:Name="TopBarSearchHotkeyButton"
+                                            MinWidth="150"
+                                            Padding="14,6"
+                                            AutomationProperties.Name="搜索热键录制"
+                                            Click="TopBarSearchHotkey_Click"
+                                            PreviewKeyDown="TopBarSearchHotkey_PreviewKeyDown"
+                                            LostKeyboardFocus="TopBarSearchHotkey_LostKeyboardFocus"/>
+                                    <TextBlock x:Name="TopBarSearchHotkeyHint"
+                                               VerticalAlignment="Center"
+                                               Margin="10,0,0,0"
+                                               Foreground="{DynamicResource IceMutedInkBrush}"
+                                               FontSize="11"
+                                               TextWrapping="Wrap"/>
+                                </StackPanel>
+                            </local:SettingsRow>
                         </local:SettingsGroup>
 
                         <TextBlock Style="{StaticResource SectionHeaderStyle}" Text="外观"/>

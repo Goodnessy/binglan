@@ -59,6 +59,12 @@ internal sealed class TopBarHost : IDisposable
         }
     }
 
+    /// <summary>
+    /// Whether a hotkey text is free to register right now; without a live bar there is
+    /// nothing to register on, so the answer is no.
+    /// </summary>
+    internal bool ProbeSearchHotkey(string text) => _window?.ProbeSearchHotkey(text) ?? false;
+
     public void Dispose() => Close();
 
     private void Open()

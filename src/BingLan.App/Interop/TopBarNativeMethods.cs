@@ -49,6 +49,21 @@ internal static class TopBarNativeMethods
 
     internal const int LeftMouseButton = 0x01;
 
+    // The search box's global focus hotkey, registered on the bar's own window.
+    internal const int WmHotkey = 0x0312;
+
+    // RegisterHotKey's own flag beyond the modifiers: a held hotkey must not fire
+    // again on the key's auto-repeat.
+    internal const uint ModNoRepeat = 0x4000;
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool RegisterHotKey(nint window, int id, uint modifiers, int virtualKey);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool UnregisterHotKey(nint window, int id);
+
     [DllImport("user32.dll")]
     private static extern short GetAsyncKeyState(int key);
 

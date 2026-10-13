@@ -1109,7 +1109,8 @@ public sealed class WidgetCoordinator : IDisposable
                 }
             },
             topBarState: _state.TopBar,
-            applyTopBar: ApplyTopBar);
+            applyTopBar: ApplyTopBar,
+            probeTopBarSearchHotkey: text => _topBar.ProbeSearchHotkey(text));
         settings.Closed += (_, _) =>
         {
             if (ReferenceEquals(_settingsWindow, settings))
@@ -2334,6 +2335,81 @@ public sealed class WidgetCoordinator : IDisposable
                 : null;
 
         public void TodoItemToggled() => owner.ScheduleSave();
+
+        // The Start-menu scan resolves every shortcut, so its result is cached across
+        // search sessions and only refreshed when it has gone stale.
+        private IReadOnlyList<DockPinnedApp>? _startMenuCache;
+        private DateTimeOffset _startMenuCacheAt;
+        private static readonly TimeSpan StartMenuCacheInterval = TimeSpan.FromMinutes(10);
+
+        public IReadOnlyList<TopBarSearchCandidate> ReadSearchCandidates()
+        {
+            var candidates = new List<TopBarSearchCandidate>();
+            var seen = new HashSet<(TopBarSearchItemKind, string)>();
+
+            // Desktop entries come first so a desktop shortcut wins the dedup against
+            // its Start-menu twin: the user put it on the desktop themselves.
+            foreach (var path in WidgetCoordinator.CollectImportableDesktopEntries())
+            {
+                var fileName = Path.GetFileName(path);
+                var kind = Directory.Exists(path)
+                    ? TopBarSearchItemKind.Folder
+                    : FileMappingService.IsLauncherName(fileName)
+                        ? TopBarSearchItemKind.App
+                        : TopBarSearchItemKind.File;
+                AddCandidate(kind, FileMappingService.GetDisplayName(path), fileName, path);
+            }
+
+            var now = DateTimeOffset.Now;
+            if (_startMenuCache is null || now - _startMenuCacheAt > StartMenuCacheInterval)
+            {
+                _startMenuCache = DockShortcuts.ReadStartMenuApps();
+                _startMenuCacheAt = now;
+            }
+            foreach (var app in _startMenuCache)
+            {
+                if (app.ExecutablePath is { } executable)
+                {
+                    AddCandidate(
+                        TopBarSearchItemKind.App,
+                        app.DisplayName,
+                        Path.GetFileName(executable),
+                        executable);
+                }
+            }
+            return candidates;
+
+            void AddCandidate(
+                TopBarSearchItemKind kind,
+                string displayName,
+                string fileName,
+                string path)
+            {
+                if (seen.Add((kind, displayName.Trim().ToLowerInvariant())))
+                {
+                    candidates.Add(new TopBarSearchCandidate(kind, displayName, fileName, path));
+                }
+            }
+        }
+
+        public void OpenSearchTarget(TopBarSearchCandidate candidate)
+        {
+            _ = Task.Run(() =>
+            {
+                try
+                {
+                    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(candidate.Path)
+                    {
+                        UseShellExecute = true
+                    })?.Dispose();
+                }
+                catch (Exception exception) when (exception is System.ComponentModel.Win32Exception
+                    or InvalidOperationException)
+                {
+                    // A broken or removed target fails quietly; the search keeps working.
+                }
+            });
+        }
 
         public void OpenTopBarSettings() => owner.OpenSettings("TopBar");
 

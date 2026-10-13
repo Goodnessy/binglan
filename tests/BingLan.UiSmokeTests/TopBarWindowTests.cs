@@ -53,6 +53,9 @@ internal static class TopBarWindowTests
         SurfacePaintsGlass(show, pump);
         TodoFlyoutShowsItemsAndCloses(show, pump);
         WeatherHoverOpensTooltip(show, pump);
+        SearchShowsResultsAndOpens(show, pump);
+        SearchSessionTogglesActivation(show, pump);
+        SearchModuleSwitchHidesBox(show, pump);
     }
 
     private static void WeatherHoverOpensTooltip(Action<Window> show, Action pump)
@@ -440,6 +443,218 @@ internal static class TopBarWindowTests
         button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
     }
 
+    // ---------------------------------------------------------------- 搜索
+
+    private const long WsExNoActivateFlag = 0x08000000;
+
+    private static IReadOnlyList<TopBarSearchCandidate> SearchSource() =>
+    [
+        new TopBarSearchCandidate(
+            TopBarSearchItemKind.App, "微信", "微信.lnk", @"C:\Users\a\Desktop\微信.lnk"),
+        new TopBarSearchCandidate(
+            TopBarSearchItemKind.App, "文件资源管理器", "explorer.exe", @"C:\Windows\explorer.exe"),
+        new TopBarSearchCandidate(
+            TopBarSearchItemKind.Folder, "云盘资料", "云盘资料", @"C:\Users\a\Desktop\云盘资料"),
+        new TopBarSearchCandidate(
+            TopBarSearchItemKind.File, "季度报告", "季度报告.docx", @"C:\Users\a\Desktop\季度报告.docx")
+    ];
+
+    /// <summary>
+    /// Drives the full search flow without a real keyboard: a session loads the
+    /// sources, typing ranks them, the pinyin initials reach Chinese names, a row
+    /// click opens exactly that result, and the session end clears box and flyout.
+    /// </summary>
+    private static void SearchShowsResultsAndOpens(Action<Window> show, Action pump)
+    {
+        var state = BarState();
+        state.VisibilityMode = TopBarVisibilityMode.SmartHide;
+        using var sampler = new WindowsPerformanceSamplingService();
+        var environment = new FakeEnvironment { SearchCandidates = SearchSource() };
+        var bar = new TopBarWindow(state, new DesktopStyleState(), environment, sampler);
+        show(bar);
+        try
+        {
+            var box = bar.SearchBox
+                ?? throw new InvalidOperationException("搜索模块应提供输入框");
+            Assert(box.Text == string.Empty, "会话开始前输入框为空");
+
+            bar.BeginSearchSession();
+            Assert(WaitUntil(pump, () => environment.CandidateReads > 0),
+                "会话开始应在后台读取搜索数据源");
+
+            box.Text = "wx";
+            bar.PumpSearch();
+            Assert(WaitUntil(pump, () => bar.SearchResults.Count > 0), "拼音首字母应给出结果");
+            var flyout = bar.SearchFlyout
+                ?? throw new InvalidOperationException("有结果时应打开结果浮层");
+            Assert(flyout.IsOpen, "结果浮层应处于打开状态");
+            Assert(bar.SearchResults[0].DisplayName == "微信", "首字母 wx 应首选微信");
+            // The popup's ScrollViewer only gains visual children once its template is
+            // applied, which needs a real layout pass; the logical tree is immediate.
+            Assert(WaitUntil(pump, () => LogicalDescendants(flyout.Child)
+                    .OfType<TextBlock>()
+                    .Any(text => text.Text.Contains("微信"))),
+                "浮层应显示应用名称");
+
+            box.Text = "ypzl";
+            bar.PumpSearch();
+            Assert(WaitUntil(pump, () => bar.SearchResults.Count == 1
+                && bar.SearchResults[0].DisplayName == "云盘资料"),
+                "新关键词应重新排序出文件夹");
+
+            // One click opens exactly the clicked row's target.
+            box.Text = "季度报告";
+            bar.PumpSearch();
+            Assert(WaitUntil(pump, () => bar.SearchResults.Count == 1), "文件名匹配命中");
+            LogicalDescendants(bar.SearchFlyout?.Child)
+                .OfType<Border>()
+                .First(row => row.Tag is 0)
+                .RaiseEvent(new System.Windows.Input.MouseButtonEventArgs(
+                    System.Windows.Input.Mouse.PrimaryDevice,
+                    0,
+                    System.Windows.Input.MouseButton.Left)
+                {
+                    RoutedEvent = UIElement.MouseLeftButtonUpEvent
+                });
+            pump();
+            Assert(environment.OpenedTargets.Count == 1
+                && environment.OpenedTargets[0].EndsWith("季度报告.docx"),
+                "单击应打开对应结果");
+            Assert(!bar.SearchSessionActive, "打开结果后结束会话");
+            Assert(box.Text == string.Empty, "会话结束应清空输入框");
+            Assert(bar.SearchFlyout is null, "会话结束应关闭结果浮层");
+
+            // A second session opens its first result with the keyboard: physical Enter
+            // reports Key.Return (WPF's Key.Enter is a different value no real key
+            // produces), which once slipped past the box's key handling.
+            bar.BeginSearchSession();
+            pump();
+            box.Text = "wx";
+            bar.PumpSearch();
+            Assert(WaitUntil(pump, () => bar.SearchResults.Count > 0), "再次搜索应有结果");
+            PressKey(box, System.Windows.Input.Key.Return);
+            pump();
+            Assert(environment.OpenedTargets.Count == 2
+                && environment.OpenedTargets[1].EndsWith("微信.lnk"),
+                "回车应打开选中的第一条结果");
+            Assert(!bar.SearchSessionActive && box.Text == string.Empty,
+                "回车打开后应结束会话并清空输入框");
+        }
+        finally
+        {
+            bar.Close();
+            pump();
+        }
+    }
+
+    /// <summary>
+    /// The bar is normally never-activating; only a search session lifts that flag so
+    /// the box can take keyboard input, and Escape restores it.
+    /// </summary>
+    private static void SearchSessionTogglesActivation(Action<Window> show, Action pump)
+    {
+        var state = BarState();
+        state.VisibilityMode = TopBarVisibilityMode.SmartHide;
+        using var sampler = new WindowsPerformanceSamplingService();
+        var environment = new FakeEnvironment { SearchCandidates = SearchSource() };
+        var bar = new TopBarWindow(state, new DesktopStyleState(), environment, sampler);
+        show(bar);
+        try
+        {
+            var handle = new WindowInteropHelper(bar).Handle;
+            var style = (long)GetWindowLongPtr(handle, GwlExStyle);
+            Assert((style & WsExNoActivateFlag) != 0, "常态应保持永不激活");
+
+            bar.BeginSearchSession();
+            pump();
+            Assert(bar.SearchSessionActive, "会话应处于激活状态");
+            style = (long)GetWindowLongPtr(handle, GwlExStyle);
+            Assert((style & WsExNoActivateFlag) == 0, "会话期间允许窗口激活接收键盘");
+
+            PressKey(bar.SearchBox!, System.Windows.Input.Key.Escape);
+            pump();
+            Assert(!bar.SearchSessionActive, "Escape 应结束会话");
+            style = (long)GetWindowLongPtr(handle, GwlExStyle);
+            Assert((style & WsExNoActivateFlag) != 0, "会话结束应恢复永不激活");
+        }
+        finally
+        {
+            bar.Close();
+            pump();
+        }
+    }
+
+    private static void SearchModuleSwitchHidesBox(Action<Window> show, Action pump)
+    {
+        var state = BarState();
+        state.VisibilityMode = TopBarVisibilityMode.SmartHide;
+        state.Modules.Search = false;
+        using var sampler = new WindowsPerformanceSamplingService();
+        var bar = new TopBarWindow(state, new DesktopStyleState(), new FakeEnvironment(), sampler);
+        show(bar);
+        try
+        {
+            Assert(bar.SearchBox is null, "关闭搜索模块后不应有输入框");
+            bar.BeginSearchSession();
+            pump();
+            Assert(!bar.SearchSessionActive, "模块关闭时会话不应开始");
+
+            state.Modules.Search = true;
+            bar.ApplyState();
+            pump();
+            Assert(bar.SearchBox is not null, "重新开启模块应重建输入框");
+        }
+        finally
+        {
+            bar.Close();
+            pump();
+        }
+    }
+
+    private static void PressKey(UIElement element, System.Windows.Input.Key key)
+    {
+        var source = PresentationSource.FromVisual(element)
+            ?? throw new InvalidOperationException("元素应有呈现源");
+        element.RaiseEvent(new System.Windows.Input.KeyEventArgs(
+            System.Windows.Input.Keyboard.PrimaryDevice,
+            source,
+            0,
+            key)
+        {
+            RoutedEvent = UIElement.PreviewKeyDownEvent
+        });
+    }
+
+    private static bool WaitUntil(Action pump, Func<bool> condition, int attempts = 60)
+    {
+        for (var attempt = 0; attempt < attempts; attempt++)
+        {
+            pump();
+            if (condition())
+            {
+                return true;
+            }
+            Thread.Sleep(25);
+        }
+        return condition();
+    }
+
+    private static IEnumerable<DependencyObject> LogicalDescendants(DependencyObject? root)
+    {
+        if (root is null)
+        {
+            yield break;
+        }
+        foreach (var child in LogicalTreeHelper.GetChildren(root).OfType<DependencyObject>())
+        {
+            yield return child;
+            foreach (var descendant in LogicalDescendants(child))
+            {
+                yield return descendant;
+            }
+        }
+    }
+
     private sealed class FakeEnvironment : ITopBarEnvironment
     {
         internal int Todos { get; set; }
@@ -450,6 +665,9 @@ internal static class TopBarWindowTests
         internal int TaskManagerRequested { get; private set; }
         internal DesktopComponentKind? ComponentRequested { get; private set; }
         internal int TopBarPageRequested { get; private set; }
+        internal IReadOnlyList<TopBarSearchCandidate> SearchCandidates { get; set; } = [];
+        internal List<string> OpenedTargets { get; } = [];
+        internal int CandidateReads { get; private set; }
 
         public bool Use24HourClock => true;
 
@@ -464,6 +682,14 @@ internal static class TopBarWindowTests
         public TopBarTodoList? ReadTodoList() => TodoList;
 
         public void TodoItemToggled() => Toggles++;
+
+        public IReadOnlyList<TopBarSearchCandidate> ReadSearchCandidates()
+        {
+            CandidateReads++;
+            return SearchCandidates;
+        }
+
+        public void OpenSearchTarget(TopBarSearchCandidate candidate) => OpenedTargets.Add(candidate.Path);
 
         public void OpenTopBarSettings() => TopBarPageRequested++;
 
