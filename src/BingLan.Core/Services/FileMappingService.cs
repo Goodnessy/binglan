@@ -497,7 +497,12 @@ public static class FileMappingService
         }
     }
 
-    private static string GetDisplayName(FileMappingState item) =>
+    /// <summary>
+    /// The name a mapping shows in its box: the user's title, or the file name with the
+    /// shortcut/program suffix hidden the way Explorer hides known extensions. This is
+    /// also the name sort key, so tiles and ordering never disagree.
+    /// </summary>
+    public static string GetDisplayName(FileMappingState item) =>
         string.IsNullOrWhiteSpace(item.Title) ? GetDisplayName(item.Path) : item.Title;
 
     private static string GetDisplayName(string path)
@@ -505,7 +510,17 @@ public static class FileMappingService
         var name = Path.GetFileName(path.TrimEnd(
             Path.DirectorySeparatorChar,
             Path.AltDirectorySeparatorChar));
-        return string.IsNullOrEmpty(name) ? path : name;
+        if (string.IsNullOrEmpty(name))
+        {
+            return path;
+        }
+
+        // Shortcut and program suffixes are noise next to the icon, so they are hidden
+        // the way Explorer hides them; a name that is only the suffix keeps it.
+        return ApplicationExtensions.Contains(Path.GetExtension(name)) &&
+               Path.GetFileNameWithoutExtension(name) is { Length: > 0 } stripped
+            ? stripped
+            : name;
     }
 
     private static string GetTypeSortKey(string path)

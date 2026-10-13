@@ -18,6 +18,7 @@ internal static class FileBoxRuleTests
         TestRelinkKeepsIdAndOrder();
         TestRelinkRejectsShellEntriesAndMissingTargets();
         TestRenameChangesOnlyTheDisplayName();
+        TestDisplayNameHidesLauncherSuffixes();
         TestTransferMovesMappingBetweenBoxes();
         TestDistributeHonoursCustomBoxes();
         TestViewModePersistenceAndMigration();
@@ -183,6 +184,32 @@ internal static class FileBoxRuleTests
         {
             Directory.Delete(temp, true);
         }
+    }
+
+    // 自动显示名隐藏快捷方式/程序后缀（与资源管理器隐藏已知扩展名一致），文档后缀保留。
+    private static void TestDisplayNameHidesLauncherSuffixes()
+    {
+        Assert(
+            FileMappingService.GetDisplayName(new FileMappingState { Path = @"C:\Users\冰蓝\桌面\浏览器.lnk" }) == "浏览器",
+            "快捷方式的显示名称应隐藏 .lnk 后缀");
+        Assert(
+            FileMappingService.GetDisplayName(new FileMappingState { Path = @"C:\Users\冰蓝\桌面\必应.URL" }) == "必应",
+            "后缀隐藏应忽略大小写");
+        Assert(
+            FileMappingService.GetDisplayName(new FileMappingState { Path = @"C:\工具\自启动.appref-ms" }) == "自启动",
+            "程序与脚本后缀应与快捷方式同样隐藏");
+        Assert(
+            FileMappingService.GetDisplayName(new FileMappingState { Path = @"C:\Users\冰蓝\桌面\报告.docx" }) == "报告.docx",
+            "文档后缀是区分信息，应保留");
+        Assert(
+            FileMappingService.GetDisplayName(new FileMappingState { Path = @"C:\Users\冰蓝\桌面\.lnk" }) == ".lnk",
+            "文件名只剩后缀时应保留完整名称");
+        Assert(
+            FileMappingService.GetDisplayName(new FileMappingState { Path = @"C:\Users\冰蓝\桌面\浏览器.lnk", Title = "  " }) == "浏览器",
+            "空白标题应回退为剥后缀的文件名");
+        Assert(
+            FileMappingService.GetDisplayName(new FileMappingState { Path = @"C:\Users\冰蓝\桌面\浏览器.lnk", Title = "网上冲浪" }) == "网上冲浪",
+            "自定义标题应优先于文件名");
     }
 
     private static void TestTransferMovesMappingBetweenBoxes()

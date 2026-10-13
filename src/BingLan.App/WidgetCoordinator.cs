@@ -198,11 +198,7 @@ public sealed class WidgetCoordinator : IDisposable
         {
             AddTodo();
         }
-        foreach (var window in _windows)
-        {
-            window.RestoreDisplayLayout();
-            WindowScreenRecovery.EnsureOnScreen(window);
-        }
+        ApplyDisplayRecovery();
         WindowScreenRecovery.SettleLayout();
         // Catches deletions that happened while the app was off; later ones arrive through
         // the mapping watcher, as do new desktop items through the import watcher. All of
@@ -600,22 +596,41 @@ public sealed class WidgetCoordinator : IDisposable
     // Runs after monitors are added, removed or rearranged, or scaling changes.
     private void OnDisplaySettingsChanged(object? sender, EventArgs e) => OnDisplayLayoutChanged();
 
-    // Cards go back to where they last sat on the arrangement now in use; on an arrangement
-    // seen for the first time they are only kept in view.
+    // Cards go back to where they last sat on the arrangement now in use; an arrangement
+    // seen for the first time gathers its cards fully into view.
     private void OnDisplayLayoutChanged() =>
         System.Windows.Application.Current?.Dispatcher.BeginInvoke(
             DispatcherPriority.Background,
             () =>
             {
-                foreach (var window in _windows.ToList())
-                {
-                    window.RestoreDisplayLayout();
-                    WindowScreenRecovery.EnsureOnScreen(window);
-                }
+                ApplyDisplayRecovery();
                 // Saving captures the cards again, now remembered for this arrangement.
                 WindowScreenRecovery.SettleLayout();
                 ScheduleSave();
             });
+
+    // Cards meet the arrangement of monitors now in use: ones that sat on it before go
+    // back to their remembered spot, first-time arrivals are gathered into view clear
+    // of the cards that already settled.
+    private void ApplyDisplayRecovery()
+    {
+        var arrivals = new List<WidgetWindowBase>();
+        var settled = new List<WidgetWindowBase>();
+        foreach (var window in _windows)
+        {
+            if (window.HasDisplayLayoutMemory())
+            {
+                window.RestoreDisplayLayout();
+                WindowScreenRecovery.EnsureOnScreen(window);
+                settled.Add(window);
+            }
+            else
+            {
+                arrivals.Add(window);
+            }
+        }
+        WindowScreenRecovery.GatherOnArrival(arrivals, settled);
+    }
 
     private void ToggleDesktop()
     {
@@ -777,9 +792,9 @@ public sealed class WidgetCoordinator : IDisposable
             RaiseCardsAboveDesktop();
             return;
         }
-        foreach (var window in _windows.Where(window => window.IsVisible))
+        foreach (var window in _windows)
         {
-            window.SendToBack();
+            window.ReturnBelowOrdinaryWindows();
         }
     }
 

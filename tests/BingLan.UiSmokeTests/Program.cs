@@ -11,6 +11,7 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using BingLan.App;
+using BingLan.App.Dock;
 using BingLan.App.Interop;
 using BingLan.App.Services;
 using BingLan.App.Taskbar;
@@ -115,6 +116,7 @@ internal static class Program
         Run("自动隐藏任务栏边缘不被组件占用", TestTaskbarRevealEdgeGuard, failures);
         Run("任务栏 XAML 恢复边界与取消", TestTaskbarXamlRecovery, failures);
         Run("工作区变化后卡片让出任务栏或 Dock 占用的边缘", TestCardLeavesReservedEdge, failures);
+        Run("隐藏期间丢失显示器后卡片在显示前被拉回", TestHiddenCardRecoversFromLostMonitor, failures);
         Run("预设布局在同步状态捕获时完整应用", TestApplyPlacementDuringCapture, failures);
         Run("窗口位置尺寸关闭后重载", TestWindowPersistence, failures);
         Run("桌面分组盒导入入口、排序和图标网格", TestFileBoxWindow, failures);
@@ -1137,6 +1139,48 @@ internal static class Program
                 window.Top + window.ActualHeight <= area.Bottom + 1d,
                 $"工作区变化后卡片仍被任务栏或 Dock 盖住：底边 {window.Top + window.ActualHeight}，工作区底边 {area.Bottom}");
             Assert(Near(window.Left, area.Left + 200d), "卡片让出底边时不应水平移动");
+        }
+        finally
+        {
+            Close(window);
+        }
+    }
+
+    private static void TestHiddenCardRecoversFromLostMonitor()
+    {
+        var state = new TodoWidgetState
+        {
+            Placement = new WindowPlacement { Left = 100, Top = 100, Width = 300, Height = 240 }
+        };
+        var window = new TodoWidgetWindow(state);
+        ShowAndPump(window);
+        try
+        {
+            var handle = new WindowInteropHelper(window).Handle;
+
+            // Park the card fully beyond every monitor, as it would sit after the monitor
+            // it was on is unplugged, then hide it the way the desktop toggle does.
+            NativeMethods.SetWindowPos(
+                handle,
+                0,
+                (int)(SystemParameters.VirtualScreenLeft + SystemParameters.VirtualScreenWidth) + 300,
+                100,
+                300,
+                240,
+                NativeMethods.SwpNoZOrder | NativeMethods.SwpNoActivate);
+            Pump();
+            window.Hide();
+            Pump();
+            Assert(!window.IsVisible, "卡片应已隐藏");
+
+            WindowScreenRecovery.EnsureOnScreen(window);
+            Pump();
+
+            Assert(GetWindowRect(handle, out var rect), "应能读取卡片位置");
+            var recovered = MonitorCatalog.GetAll().Any(monitor =>
+                monitor.WorkingArea.Left < rect.Right && rect.Left < monitor.WorkingArea.Right
+                && monitor.WorkingArea.Top < rect.Bottom && rect.Top < monitor.WorkingArea.Bottom);
+            Assert(recovered, "隐藏期间丢失显示器后，卡片在显示前就应被拉回工作区");
         }
         finally
         {
@@ -2282,10 +2326,20 @@ internal static class Program
             Assert(IsWindowVisible(handle), "提升后组件应保持可见");
             GetWindowRect(handle, out var raised);
             Assert(before.Left == raised.Left && before.Top == raised.Top &&
-                before.Right == raised.Right && before.Bottom == raised.Bottom,
+                   before.Right == raised.Right && before.Bottom == raised.Bottom,
                 "提升只改 Z 序，不应移动或缩放组件");
 
+            // Regression: interacting with the card (dragging it, clicking a box's
+            // collapse toggle) activates it, and the later Deactivated sends it back —
+            // during the raised state that must not drop it behind the desktop surface,
+            // where it would stay hidden until the next "show desktop" toggle.
             window.SendToBack();
+            Pump();
+            Assert((GetWindowLongPtr(handle, GwlExStyle) & WsExTopmost) != 0,
+                "显示桌面期间组件失活回落不应把它压回桌面表面之下");
+            Assert(IsWindowVisible(handle), "显示桌面期间组件应保持可见");
+
+            window.ReturnBelowOrdinaryWindows();
             PumpUntil(() => (GetWindowLongPtr(handle, GwlExStyle) & WsExTopmost) == 0,
                 "回落后组件应离开置顶带");
             Assert(IsWindowVisible(handle), "回落后组件应保持可见");
