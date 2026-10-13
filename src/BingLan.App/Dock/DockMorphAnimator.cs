@@ -1,0 +1,170 @@
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Media;
+using System.Windows.Media.Animation;
+using BingLan.Core.Dock;
+using BingLan.Core.Models;
+using Point = System.Windows.Point;
+
+namespace BingLan.App.Dock;
+
+internal enum DockMorphKind
+{
+    None,
+    Expand,
+    Collapse,
+    FadeIn
+}
+
+/// <summary>
+/// The morph animations of the dock surface: the row shrinks into the floating
+/// handle when smart-hidden and grows back out of it on reveal, plus the plain
+/// fade-in used when the dock reappears at its strip. Every Begin call retargets
+/// from the current visual state, so an interrupted morph reverses smoothly instead
+/// of restarting. The caller decides whether animation is allowed at all; this class
+/// only runs what it is asked to run.
+/// </summary>
+internal sealed class DockMorphAnimator
+{
+    private readonly Border _surface;
+    private readonly ScaleTransform _scale = new(1, 1);
+    private DockMorphKind _active;
+    // Replacing or removing an animation clock still raises its Completed, so every
+    // completion is tagged with the flight it belongs to; stale ones are ignored.
+    private int _flight;
+
+    internal DockMorphAnimator(Border surface)
+    {
+        _surface = surface;
+        surface.RenderTransform = _scale;
+    }
+
+    /// <summary>Raised once when a collapse flight finishes; the owner hides the window then.</summary>
+    internal event Action? CollapseCompleted;
+
+    internal DockMorphKind ActiveKind => _active;
+
+    internal bool IsCollapsing => _active == DockMorphKind.Collapse;
+
+    /// <summary>
+    /// Grows the row out of the handle. A fresh expand starts at the morph scale with
+    /// the centre at the handle; reversing a running collapse keeps its current size
+    /// and just animates back to full.
+    /// </summary>
+    internal void BeginExpand(Point center, MotionLevel motion)
+    {
+        _active = DockMorphKind.Expand;
+        ApplyCenter(center);
+        // The base values are the fresh-start state; a replaced animation snapshots
+        // the current size instead, which is exactly the interruption behaviour.
+        _scale.ScaleX = DockMorphMotion.MorphScale(motion);
+        _scale.ScaleY = DockMorphMotion.MorphScale(motion);
+        _surface.Opacity = 0d;
+        var duration = new Duration(DockMorphMotion.ExpandDuration(motion));
+        var flight = ++_flight;
+        var scaleX = ToOne(duration, EasingMode.EaseOut);
+        scaleX.Completed += (_, _) => OnExpandCompleted(flight);
+        _scale.BeginAnimation(ScaleTransform.ScaleXProperty, scaleX);
+        _scale.BeginAnimation(ScaleTransform.ScaleYProperty, ToOne(duration, EasingMode.EaseOut));
+        _surface.BeginAnimation(UIElement.OpacityProperty, ToOne(duration, EasingMode.EaseOut));
+    }
+
+    /// <summary>Shrinks the row into the handle; <see cref="CollapseCompleted"/> fires at the end.</summary>
+    internal void BeginCollapse(Point center, MotionLevel motion)
+    {
+        _active = DockMorphKind.Collapse;
+        ApplyCenter(center);
+        var duration = new Duration(DockMorphMotion.CollapseDuration(motion));
+        var flight = ++_flight;
+        var scaleX = new DoubleAnimation(DockMorphMotion.MorphScale(motion), duration)
+        {
+            EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseIn }
+        };
+        scaleX.Completed += (_, _) => OnCollapseCompleted(flight);
+        _scale.BeginAnimation(ScaleTransform.ScaleXProperty, scaleX);
+        _scale.BeginAnimation(ScaleTransform.ScaleYProperty, new DoubleAnimation(
+            DockMorphMotion.MorphScale(motion), duration)
+        {
+            EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseIn }
+        });
+        _surface.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation(0d, duration)
+        {
+            EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseIn }
+        });
+    }
+
+    /// <summary>The reappear-at-strip transition: opacity only, no morph geometry.</summary>
+    internal void BeginFadeIn(MotionLevel motion)
+    {
+        _active = DockMorphKind.FadeIn;
+        _flight++;
+        _surface.Opacity = 0d;
+        var flight = _flight;
+        var fade = new DoubleAnimation(1d, new Duration(DockMorphMotion.FadeInDuration(motion)))
+        {
+            EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut }
+        };
+        fade.Completed += (_, _) => OnExpandCompleted(flight);
+        _surface.BeginAnimation(UIElement.OpacityProperty, fade);
+    }
+
+    /// <summary>
+    /// Stops every flight and restores the resting surface at once. The pending
+    /// collapse completion is cancelled with it: the caller owns the window state.
+    /// </summary>
+    internal void Snap()
+    {
+        _active = DockMorphKind.None;
+        _flight++;
+        _scale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
+        _scale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
+        _surface.BeginAnimation(UIElement.OpacityProperty, null);
+        _scale.ScaleX = 1d;
+        _scale.ScaleY = 1d;
+        _surface.Opacity = 1d;
+    }
+
+    private static DoubleAnimation ToOne(Duration duration, EasingMode easing) => new(1d, duration)
+    {
+        EasingFunction = new QuadraticEase { EasingMode = easing }
+    };
+
+    private void ApplyCenter(Point center)
+    {
+        _scale.CenterX = center.X;
+        _scale.CenterY = center.Y;
+    }
+
+    private void OnExpandCompleted(int flight)
+    {
+        if (flight != _flight)
+        {
+            return;
+        }
+
+        // Rest at full size: the end values equal the base we restore to, so this is
+        // invisible, but it clears the held animation clocks and the shrunken base
+        // values a fresh expand had set.
+        Snap();
+    }
+
+    private void OnCollapseCompleted(int flight)
+    {
+        if (flight != _flight)
+        {
+            return;
+        }
+
+        // Retire the flight first: removing the clocks below can itself raise a
+        // stale Completed, which must not raise CollapseCompleted twice.
+        _flight++;
+        _active = DockMorphKind.None;
+        _scale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
+        _scale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
+        _surface.BeginAnimation(UIElement.OpacityProperty, null);
+        _scale.ScaleX = 1d;
+        _scale.ScaleY = 1d;
+        _surface.Opacity = 1d;
+        CollapseCompleted?.Invoke();
+    }
+}

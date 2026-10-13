@@ -64,6 +64,7 @@ public partial class IceBlueDockWindow : Window
     private DockHandleWindow? _handleWindow;
     private bool _handleExpanded;
     private PixelRect _expandedRect;
+    private readonly DockMorphAnimator _morph;
     private bool _trueFullScreenForeground;
     private ContextMenu? _openMenu;
     private DateTimeOffset _lastReservationAttempt;
@@ -83,6 +84,8 @@ public partial class IceBlueDockWindow : Window
     {
         _state = state;
         InitializeComponent();
+        _morph = new DockMorphAnimator(DockSurface);
+        _morph.CollapseCompleted += OnCollapseMorphCompleted;
         _watcher = new WindowEventWatcher(Dispatcher);
         _watcher.SnapshotInvalidated += RefreshWindows;
         _foregroundTimer = new DispatcherTimer(
@@ -148,6 +151,12 @@ public partial class IceBlueDockWindow : Window
         if (!UsesSmartHide)
         {
             _autoHide = new DockAutoHideState();
+            if (_morph.IsCollapsing)
+            {
+                // A flight whose completion would hide the dock must not outlive the
+                // switch to a mode that keeps the dock shown.
+                CompleteSmartHideImmediately();
+            }
             if (_handleExpanded)
             {
                 CollapseHandleExpansion();
@@ -276,6 +285,7 @@ public partial class IceBlueDockWindow : Window
     private void OnClosing(object? sender, CancelEventArgs e)
     {
         _closing = true;
+        _morph.Snap();
         if (_handle != 0)
         {
             DockNativeMethods.DeregisterShellHookWindow(_handle);
@@ -938,11 +948,25 @@ public partial class IceBlueDockWindow : Window
                 revealDepth),
             PointerOverDock: pointerOverDock,
             InteractionActive: _menuOpen || _dragging || DateTimeOffset.UtcNow < _attentionRevealUntil);
+        if (_trueFullScreenForeground && _morph.IsCollapsing)
+        {
+            // Nothing may animate over a truly full-screen app: land the pending
+            // collapse immediately instead of letting the flight finish.
+            CompleteSmartHideImmediately();
+        }
+
         if (_autoHide.Update(input, DateTimeOffset.UtcNow))
         {
             if (_autoHide.IsShown)
             {
-                ShowDock();
+                // Revealing beside the handle: the row grows out of the handle, so it
+                // must already sit at the expanded rect when it appears — place first,
+                // then show, or the morph would start from the strip geometry.
+                if (pointerOverHandle)
+                {
+                    ApplyHandleExpansion(monitor, handleRect);
+                }
+                ShowDock(fromHandle: pointerOverHandle);
             }
             else
             {
@@ -951,7 +975,7 @@ public partial class IceBlueDockWindow : Window
                     menu.IsOpen = false;
                 }
                 _hiddenBySmartHide = true;
-                Hide();
+                BeginSmartHide();
             }
         }
 
@@ -967,15 +991,18 @@ public partial class IceBlueDockWindow : Window
             var pointerLeftDock = !pointerOverHandle
                 && !(cursor.X >= _expandedRect.Left && cursor.X < _expandedRect.Right
                     && cursor.Y >= _expandedRect.Top && cursor.Y < _expandedRect.Bottom);
-            if (_handleExpanded && (!_autoHide.IsShown || (pointerLeftDock && !overlaps)))
+            if (_handleExpanded && !_morph.IsCollapsing
+                && (!_autoHide.IsShown || (pointerLeftDock && !overlaps)))
             {
+                // A collapse flight owns the expanded placement until it completes;
+                // this branch only serves the still-shown strip jump.
                 CollapseHandleExpansion();
             }
         }
         SyncHandle();
     }
 
-    private void ShowDock()
+    private void ShowDock(bool fromHandle = false)
     {
         if (_closing)
         {
@@ -983,8 +1010,31 @@ public partial class IceBlueDockWindow : Window
         }
 
         _hiddenBySmartHide = false;
+        if (_morph.IsCollapsing)
+        {
+            // The reveal interrupted a collapse flight: undo the placement the flight
+            // had taken and grow back from wherever the shrink had reached. Replacing
+            // the animation cancels the deferred hide.
+            var placement = _handleExpanded ? _expandedRect : (_appBar?.Bounds ?? default);
+            _appBar?.SetFloatingOverride(_handleExpanded ? _expandedRect : null);
+            _morph.BeginExpand(MorphCentre(placement), Motion);
+        }
         if (!IsVisible)
         {
+            if (MorphEnabled && !_morph.IsCollapsing)
+            {
+                if (fromHandle)
+                {
+                    // Fresh reveal beside the handle: grow out of it.
+                    _morph.BeginExpand(MorphCentre(_handleExpanded ? _expandedRect : _appBar?.Bounds ?? default), Motion);
+                }
+                else
+                {
+                    // Reappear at the strip: a short fade, not a handle morph — the
+                    // pointer summoned the dock where it is, not at the handle.
+                    _morph.BeginFadeIn(Motion);
+                }
+            }
             Show();
         }
         if (_refreshPending)
@@ -993,6 +1043,106 @@ public partial class IceBlueDockWindow : Window
             RefreshWindows();
         }
         SyncHandle();
+    }
+
+    // True when the morph may run at all: the system "show animations" switch and the
+    // style's motion level both gate it, exactly like the hover zoom.
+    private bool MorphEnabled => SystemParameters.ClientAreaAnimation && Motion != MotionLevel.Off;
+
+    // The smart-hide transition: instead of vanishing, the row shrinks into the
+    // handle. A full-screen foreground, a missing handle or disabled animation keep
+    // the instant hide. While the flight runs the window keeps its (possibly
+    // widened) placement; the completion restores the strip placement and hides.
+    private void BeginSmartHide()
+    {
+        if (!MorphEnabled
+            || _trueFullScreenForeground
+            || _handleWindow is not { IsDragActive: false } handle)
+        {
+            _morph.Snap();
+            Hide();
+            SyncHandle();
+            return;
+        }
+
+        var handleRect = handle.CurrentRect;
+        PixelRect placement;
+        if (_handleExpanded)
+        {
+            // Beside the handle already: shrink in place, keeping the override so
+            // AppBar notifications cannot pull the row back to the strip mid-flight.
+            placement = _expandedRect;
+        }
+        else
+        {
+            // From the strip: widen the window over the whole travel path first, or
+            // the shrinking row would clip at the strip's edge far from the handle.
+            placement = DockMorphMotion.TravelBounds(_appBar?.Bounds ?? default, handleRect);
+            _appBar?.SetFloatingOverride(placement);
+        }
+
+        _morph.BeginCollapse(MorphCentre(placement), Motion);
+    }
+
+    private void CompleteSmartHideImmediately()
+    {
+        _morph.Snap();
+        if (_handleExpanded)
+        {
+            CollapseHandleExpansion();
+        }
+        else
+        {
+            _appBar?.SetFloatingOverride(null);
+        }
+        Hide();
+        SyncHandle();
+    }
+
+    private void OnCollapseMorphCompleted()
+    {
+        if (_closing)
+        {
+            return;
+        }
+
+        // The row has fully disappeared into the handle: restore the strip placement
+        // invisibly, hide the window, and let the handle bounce once to land it.
+        if (_handleExpanded)
+        {
+            CollapseHandleExpansion();
+        }
+        else
+        {
+            _appBar?.SetFloatingOverride(null);
+        }
+        Hide();
+        if (!_trueFullScreenForeground)
+        {
+            _handleWindow?.Pulse();
+        }
+        SyncHandle();
+    }
+
+    // The point a morph converges on, in the surface's own DIP coordinates for the
+    // given placement: the handle's centre while the row travels, the surface's own
+    // centre when Reduced shrinks in place. The point may lie outside the surface —
+    // a ScaleTransform centred there pulls the shrinking row toward it.
+    private Point MorphCentre(PixelRect placement)
+    {
+        var scale = _appBar?.Monitor is { } monitor ? monitor.Dpi / 96d : 1d;
+        if (_handleWindow is { } handle && DockMorphMotion.IsTravelEnabled(Motion))
+        {
+            var handleRect = handle.CurrentRect;
+            var (x, y) = DockMorphMotion.ToElementPoint(
+                (handleRect.Left + handleRect.Right) / 2,
+                (handleRect.Top + handleRect.Bottom) / 2,
+                placement,
+                scale);
+            return new Point(x, y);
+        }
+
+        return new Point(placement.Width / 2d / scale, placement.Height / 2d / scale);
     }
 
     // The handle stands in for the dock while it is smart-hidden: it appears then and
@@ -1017,7 +1167,13 @@ public partial class IceBlueDockWindow : Window
         _handleWindow = new DockHandleWindow();
         _handleWindow.DragStarted += () =>
         {
-            if (_handleExpanded)
+            if (_morph.IsCollapsing)
+            {
+                // Dragging the handle mid-collapse: finish instantly — a row still
+                // flying into a handle the user is moving would fight the drag.
+                CompleteSmartHideImmediately();
+            }
+            else if (_handleExpanded)
             {
                 CollapseHandleExpansion();
             }
@@ -1111,6 +1267,11 @@ public partial class IceBlueDockWindow : Window
 
     private void CollapseHandleExpansion()
     {
+        // Instantly drop any morph in flight: this collapse moves a still-visible
+        // dock straight to the strip, and a half-grown row would otherwise land
+        // mid-scale. A smart-hide collapse flight never reaches here — its placement
+        // is released by the animation completion or CompleteSmartHideImmediately.
+        _morph.Snap();
         _handleExpanded = false;
         _expandedRect = default;
         _appBar?.SetFloatingOverride(null);

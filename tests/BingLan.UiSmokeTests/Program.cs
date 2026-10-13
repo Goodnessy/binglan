@@ -147,6 +147,7 @@ internal static class Program
         Run("卡片拖动吸附到相邻卡片且不会被系统吸附成半屏", () => SnapMoveTests.Run(ShowAndPump, Pump), failures);
         Run("显示器排列切换后卡片回到该排列下的位置", () => DisplayLayoutWindowTests.Run(ShowAndPump, Pump), failures);
         Run("Dock 隐藏把手的窗口样式、拖动与显隐", () => DockHandleTests.Run(ShowAndPump, Pump), failures);
+        Run("Dock 形变动画的收敛点、完成与打断", () => DockMorphAnimatorTests.Run(ShowAndPump, Pump, PumpUntil), failures);
         Run("顶端信息条的窗口样式、模块与点击深链", () => TopBarWindowTests.Run(ShowAndPump, Pump), failures);
         Run("主题导入对话框显示名称与预览图", TestThemeImportDialogShowsNameAndPreview, failures);
 
