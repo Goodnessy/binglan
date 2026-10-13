@@ -5,9 +5,10 @@ namespace BingLan.Core.Dock;
 /// <summary>
 /// Timing and geometry rules for the morph between the dock row and its floating
 /// handle: the row shrinks into the handle when smart-hidden and grows back out of
-/// it on reveal. The system "show animations" switch turns every morph off, exactly
-/// like the hover zoom; Reduced keeps only a small in-place scale without the
-/// travel toward the handle.
+/// it on reveal, and reappearing at the strip fades in with a slight grow from the
+/// row's own bottom edge. The system "show animations" switch turns every morph off,
+/// exactly like the hover zoom; Reduced keeps only a small in-place scale without
+/// the travel toward the handle.
 /// </summary>
 public static class DockMorphMotion
 {
@@ -26,16 +27,23 @@ public static class DockMorphMotion
     public static TimeSpan CollapseDuration(MotionLevel motion) =>
         motion == MotionLevel.Reduced
             ? TimeSpan.FromMilliseconds(100)
-            : TimeSpan.FromMilliseconds(160);
+            : TimeSpan.FromMilliseconds(260);
 
-    public static TimeSpan FadeInDuration(MotionLevel motion) =>
+    public static TimeSpan ReappearDuration(MotionLevel motion) =>
         motion == MotionLevel.Reduced
             ? TimeSpan.FromMilliseconds(80)
-            : TimeSpan.FromMilliseconds(120);
+            : TimeSpan.FromMilliseconds(200);
 
     /// <summary>The row's scale at the handle end of a morph; 1 is the resting row.</summary>
     public static double MorphScale(MotionLevel motion) =>
         motion == MotionLevel.Reduced ? 0.9d : 0.15d;
+
+    /// <summary>
+    /// The row's starting scale when it reappears at its strip: a slight grow from
+    /// its own bottom edge. 1 means a pure fade (Reduced).
+    /// </summary>
+    public static double ReappearScale(MotionLevel motion) =>
+        motion == MotionLevel.Reduced ? 1d : 0.85d;
 
     /// <summary>The landing bounce of the handle glyph after the row collapsed into it.</summary>
     public static TimeSpan HandlePulseDuration => TimeSpan.FromMilliseconds(150);

@@ -32,16 +32,16 @@ internal static class DockMorphTests
             throw new InvalidOperationException("只有 Standard 档应把整行吸向悬浮图标");
         }
 
-        // 时长：展开 200ms、收起 160ms、淡入 120ms；Reduced 全部收短。
+        // 时长：展开 200ms、收起 260ms、原地浮出 200ms；Reduced 全部收短。
         if (DockMorphMotion.ExpandDuration(MotionLevel.Standard) != TimeSpan.FromMilliseconds(200)
-            || DockMorphMotion.CollapseDuration(MotionLevel.Standard) != TimeSpan.FromMilliseconds(160)
-            || DockMorphMotion.FadeInDuration(MotionLevel.Standard) != TimeSpan.FromMilliseconds(120))
+            || DockMorphMotion.CollapseDuration(MotionLevel.Standard) != TimeSpan.FromMilliseconds(260)
+            || DockMorphMotion.ReappearDuration(MotionLevel.Standard) != TimeSpan.FromMilliseconds(200))
         {
-            throw new InvalidOperationException("Standard 档形变时长应为 200/160/120ms");
+            throw new InvalidOperationException("Standard 档形变时长应为 200/260/200ms");
         }
         if (DockMorphMotion.ExpandDuration(MotionLevel.Reduced) != TimeSpan.FromMilliseconds(100)
             || DockMorphMotion.CollapseDuration(MotionLevel.Reduced) != TimeSpan.FromMilliseconds(100)
-            || DockMorphMotion.FadeInDuration(MotionLevel.Reduced) != TimeSpan.FromMilliseconds(80))
+            || DockMorphMotion.ReappearDuration(MotionLevel.Reduced) != TimeSpan.FromMilliseconds(80))
         {
             throw new InvalidOperationException("Reduced 档形变时长应为 100/100/80ms");
         }
@@ -49,6 +49,11 @@ internal static class DockMorphTests
             || Math.Abs(DockMorphMotion.MorphScale(MotionLevel.Reduced) - 0.9d) > 0.001d)
         {
             throw new InvalidOperationException("形变端点缩放应为 Standard 0.15、Reduced 0.9");
+        }
+        if (Math.Abs(DockMorphMotion.ReappearScale(MotionLevel.Standard) - 0.85d) > 0.001d
+            || Math.Abs(DockMorphMotion.ReappearScale(MotionLevel.Reduced) - 1d) > 0.001d)
+        {
+            throw new InvalidOperationException("原地浮出起始缩放应为 Standard 0.85、Reduced 纯淡入");
         }
 
         // 像素点→元素坐标：按 DPI 换算，且允许落在表面之外（悬浮图标中心在窗口外）。

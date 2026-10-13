@@ -13,16 +13,17 @@ internal enum DockMorphKind
     None,
     Expand,
     Collapse,
-    FadeIn
+    Reappear
 }
 
 /// <summary>
 /// The morph animations of the dock surface: the row shrinks into the floating
-/// handle when smart-hidden and grows back out of it on reveal, plus the plain
-/// fade-in used when the dock reappears at its strip. Every Begin call retargets
-/// from the current visual state, so an interrupted morph reverses smoothly instead
-/// of restarting. The caller decides whether animation is allowed at all; this class
-/// only runs what it is asked to run.
+/// handle when smart-hidden and grows back out of it on reveal, plus the reappear
+/// used when the dock returns at its strip — a fade with a slight grow from the
+/// row's own bottom edge. Every Begin call retargets from the current visual state,
+/// so an interrupted morph reverses smoothly instead of restarting. The caller
+/// decides whether animation is allowed at all; this class only runs what it is
+/// asked to run.
 /// </summary>
 internal sealed class DockMorphAnimator
 {
@@ -93,19 +94,31 @@ internal sealed class DockMorphAnimator
         });
     }
 
-    /// <summary>The reappear-at-strip transition: opacity only, no morph geometry.</summary>
-    internal void BeginFadeIn(MotionLevel motion)
+    /// <summary>
+    /// The reappear-at-strip transition: fade plus a slight grow about the row's own
+    /// bottom edge, so it reads as emerging in place instead of popping in. Reduced
+    /// keeps a pure fade (scale target 1).
+    /// </summary>
+    internal void BeginReappear(Point center, MotionLevel motion)
     {
-        _active = DockMorphKind.FadeIn;
-        _flight++;
+        _active = DockMorphKind.Reappear;
         _surface.Opacity = 0d;
-        var flight = _flight;
-        var fade = new DoubleAnimation(1d, new Duration(DockMorphMotion.FadeInDuration(motion)))
-        {
-            EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut }
-        };
+        var grow = DockMorphMotion.ReappearScale(motion);
+        var duration = new Duration(DockMorphMotion.ReappearDuration(motion));
+        var flight = ++_flight;
+        var fade = ToOne(duration, EasingMode.EaseOut);
         fade.Completed += (_, _) => OnExpandCompleted(flight);
         _surface.BeginAnimation(UIElement.OpacityProperty, fade);
+        if (grow == 1d)
+        {
+            return;
+        }
+
+        ApplyCenter(center);
+        _scale.ScaleX = grow;
+        _scale.ScaleY = grow;
+        _scale.BeginAnimation(ScaleTransform.ScaleXProperty, ToOne(duration, EasingMode.EaseOut));
+        _scale.BeginAnimation(ScaleTransform.ScaleYProperty, ToOne(duration, EasingMode.EaseOut));
     }
 
     /// <summary>

@@ -1023,16 +1023,18 @@ public partial class IceBlueDockWindow : Window
         {
             if (MorphEnabled && !_morph.IsCollapsing)
             {
+                var placement = _handleExpanded ? _expandedRect : (_appBar?.Bounds ?? default);
                 if (fromHandle)
                 {
                     // Fresh reveal beside the handle: grow out of it.
-                    _morph.BeginExpand(MorphCentre(_handleExpanded ? _expandedRect : _appBar?.Bounds ?? default), Motion);
+                    _morph.BeginExpand(MorphCentre(placement), Motion);
                 }
                 else
                 {
-                    // Reappear at the strip: a short fade, not a handle morph — the
-                    // pointer summoned the dock where it is, not at the handle.
-                    _morph.BeginFadeIn(Motion);
+                    // Reappear in place with a fade and a slight grow from the row's
+                    // own bottom edge — not a handle morph: the pointer summoned the
+                    // dock where it is, and a pure fade reads as an abrupt pop.
+                    _morph.BeginReappear(BottomEdgeCentre(placement), Motion);
                 }
             }
             Show();
@@ -1143,6 +1145,14 @@ public partial class IceBlueDockWindow : Window
         }
 
         return new Point(placement.Width / 2d / scale, placement.Height / 2d / scale);
+    }
+
+    // The anchor a reappear grows from: the middle of the row's bottom edge, so the
+    // row emerges upward from its own resting footprint.
+    private Point BottomEdgeCentre(PixelRect placement)
+    {
+        var scale = _appBar?.Monitor is { } monitor ? monitor.Dpi / 96d : 1d;
+        return new Point(placement.Width / 2d / scale, placement.Height / scale);
     }
 
     // The handle stands in for the dock while it is smart-hidden: it appears then and

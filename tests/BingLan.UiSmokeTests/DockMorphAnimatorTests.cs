@@ -80,12 +80,12 @@ internal static class DockMorphAnimatorTests
                 throw new InvalidOperationException("Snap 后表面应立即复位");
             }
 
-            // 条带重现走纯淡入：不触碰缩放，结束后透明度回满。
-            animator.BeginFadeIn(MotionLevel.Standard);
-            pumpUntil(() => animator.ActiveKind == DockMorphKind.None, "淡入没有完成");
-            if (Math.Abs(surface.Opacity - 1d) > 0.001d)
+            // 条带重现走原地浮出：淡入并自底缘轻微放大，结束后基准值全复位。
+            animator.BeginReappear(new Point(200, 80), MotionLevel.Standard);
+            pumpUntil(() => animator.ActiveKind == DockMorphKind.None, "原地浮出没有完成");
+            if (Math.Abs(surface.Opacity - 1d) > 0.001d || Math.Abs(scale.ScaleX - 1d) > 0.001d)
             {
-                throw new InvalidOperationException("淡入结束后透明度应回到 1");
+                throw new InvalidOperationException("原地浮出结束后透明度与缩放都应回到 1");
             }
 
             RunHandlePulseTests(show, pump, pumpUntil);
