@@ -5,12 +5,15 @@ public readonly record struct DockAutoHideInput(
     bool ForegroundIsFullScreen,
     bool PointerInRevealZone,
     bool PointerOverDock,
-    bool InteractionActive);
+    bool InteractionActive,
+    bool OverlapIsMaximizedWindow);
 
 /// <summary>
 /// Smart-hide decisions for the floating dock: it stays visible until a window
 /// needs the space it covers, reappears when the pointer reaches the screen edge,
 /// and never appears over a full-screen foreground window, even mid-interaction.
+/// A maximized window covering the dock hides it at once — that overlap will not
+/// clear on its own, so idling through the debounce delay only reads as a pause.
 /// </summary>
 public sealed class DockAutoHideState
 {
@@ -36,6 +39,11 @@ public sealed class DockAutoHideState
         if (!IsShown)
         {
             return false;
+        }
+
+        if (input.OverlapIsMaximizedWindow)
+        {
+            return Hide();
         }
 
         _hideRequestedAt ??= now;

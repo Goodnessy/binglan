@@ -883,6 +883,13 @@ public partial class IceBlueDockWindow : Window
             && foregroundBounds.Right >= monitor.Bounds.Right
             && foregroundBounds.Bottom >= monitor.Bounds.Bottom;
         var foregroundZoomed = foreground && foregroundWindow != 0 && DockNativeMethods.IsZoomed(foregroundWindow);
+        // A maximized window on the dock's monitor both vacates the reservation and,
+        // below, hides the dock at once — the row collapses while Windows re-fills
+        // the maximized window over the freed strip, as one motion.
+        var maximizedOnDockMonitor = foregroundZoomed
+            && DockNativeMethods.MonitorFromWindow(
+                foregroundWindow,
+                DockNativeMethods.MonitorDefaultToNearest) == monitor.MonitorHandle;
         // A maximized window filling the monitor (for example while the taskbar auto-hides)
         // is still working space the handle may reveal the dock over.
         var trueFullScreen = DockVacateRules.IsTrueFullScreen(fullScreen, foregroundZoomed);
@@ -890,10 +897,7 @@ public partial class IceBlueDockWindow : Window
         var shouldVacate = DockVacateRules.ShouldReleaseForMaximized(
             _state.VisibilityMode,
             _state.ReleaseWhenMaximized,
-            foregroundZoomed
-                && DockNativeMethods.MonitorFromWindow(
-                    foregroundWindow,
-                    DockNativeMethods.MonitorDefaultToNearest) == monitor.MonitorHandle);
+            maximizedOnDockMonitor);
         if (shouldVacate != _vacatedForMaximized)
         {
             _vacatedForMaximized = shouldVacate;
@@ -947,7 +951,8 @@ public partial class IceBlueDockWindow : Window
                 monitor.Bounds,
                 revealDepth),
             PointerOverDock: pointerOverDock,
-            InteractionActive: _menuOpen || _dragging || DateTimeOffset.UtcNow < _attentionRevealUntil);
+            InteractionActive: _menuOpen || _dragging || DateTimeOffset.UtcNow < _attentionRevealUntil,
+            OverlapIsMaximizedWindow: maximizedOnDockMonitor && overlaps);
         if (_trueFullScreenForeground && _morph.IsCollapsing)
         {
             // Nothing may animate over a truly full-screen app: land the pending

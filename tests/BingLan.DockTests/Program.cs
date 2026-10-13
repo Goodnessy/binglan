@@ -943,7 +943,7 @@ static void TestDockAutoHideNoOverlapStaysShown()
 {
     var state = new DockAutoHideState();
     var now = DateTimeOffset.UtcNow;
-    var changed = state.Update(new DockAutoHideInput(false, false, false, false, false), now);
+    var changed = state.Update(new DockAutoHideInput(false, false, false, false, false, false), now);
     Assert(!changed, "无重叠时不应触发状态变化");
     Assert(state.IsShown, "无重叠时应保持显示");
 }
@@ -952,7 +952,7 @@ static void TestDockAutoHideDelay()
 {
     var state = new DockAutoHideState();
     var t0 = DateTimeOffset.UtcNow;
-    var overlapInput = new DockAutoHideInput(true, false, false, false, false);
+    var overlapInput = new DockAutoHideInput(true, false, false, false, false, false);
 
     Assert(!state.Update(overlapInput, t0), "重叠发生瞬间不应立即隐藏");
     Assert(state.IsShown, "延迟期内应保持显示");
@@ -977,12 +977,12 @@ static void TestDockAutoHidePointerRevealResetsTimer()
 {
     var state = new DockAutoHideState();
     var t0 = DateTimeOffset.UtcNow;
-    var overlapInput = new DockAutoHideInput(true, false, false, false, false);
+    var overlapInput = new DockAutoHideInput(true, false, false, false, false, false);
     state.Update(overlapInput, t0);
 
     var pointerInZone = t0 + TimeSpan.FromMilliseconds(300);
     Assert(
-        !state.Update(new DockAutoHideInput(true, false, true, false, false), pointerInZone),
+        !state.Update(new DockAutoHideInput(true, false, true, false, false, false), pointerInZone),
         "指针进入唤出区域时已处于显示状态不应报告变化");
     Assert(state.IsShown, "指针进入唤出区域应保持显示");
 
@@ -1006,13 +1006,13 @@ static void TestDockAutoHidePointerOverDockShowsImmediately()
 {
     var state = new DockAutoHideState();
     var t0 = DateTimeOffset.UtcNow;
-    state.Update(new DockAutoHideInput(true, false, false, false, false), t0);
-    state.Update(new DockAutoHideInput(true, false, false, false, false), t0 + DockAutoHideState.HideDelay);
+    state.Update(new DockAutoHideInput(true, false, false, false, false, false), t0);
+    state.Update(new DockAutoHideInput(true, false, false, false, false, false), t0 + DockAutoHideState.HideDelay);
     Assert(!state.IsShown, "前置条件：延迟到达后应已隐藏");
 
     var t1 = t0 + DockAutoHideState.HideDelay + TimeSpan.FromSeconds(1);
     Assert(
-        state.Update(new DockAutoHideInput(false, false, false, true, false), t1),
+        state.Update(new DockAutoHideInput(false, false, false, true, false, false), t1),
         "指针悬停在 Dock 上应立即显示");
     Assert(state.IsShown, "指针悬停在 Dock 上应处于显示状态");
 }
@@ -1063,7 +1063,7 @@ static void TestDockAutoHideFullScreenHidesImmediately()
 {
     var state = new DockAutoHideState();
     Assert(
-        state.Update(new DockAutoHideInput(false, true, true, false, false), DateTimeOffset.UtcNow),
+        state.Update(new DockAutoHideInput(false, true, true, false, false, false), DateTimeOffset.UtcNow),
         "全屏前台窗口即使指针在唤出区域也应立即隐藏");
     Assert(!state.IsShown, "全屏前台窗口应隐藏 Dock");
 }
@@ -1073,12 +1073,12 @@ static void TestDockAutoHideFullScreenOverridesInteraction()
     var state = new DockAutoHideState();
     var t0 = DateTimeOffset.UtcNow;
     Assert(
-        state.Update(new DockAutoHideInput(false, true, false, true, true), t0),
+        state.Update(new DockAutoHideInput(false, true, false, true, true, false), t0),
         "菜单或拖动进行中出现全屏窗口时也应隐藏 Dock");
     Assert(!state.IsShown, "全屏窗口在前台时 Dock 应保持隐藏");
 
     Assert(
-        state.Update(new DockAutoHideInput(false, false, false, false, true), t0 + TimeSpan.FromSeconds(1)),
+        state.Update(new DockAutoHideInput(false, false, false, false, true, false), t0 + TimeSpan.FromSeconds(1)),
         "全屏结束后进行中的交互应让 Dock 重新显示");
     Assert(state.IsShown, "全屏结束后 Dock 应显示");
 }

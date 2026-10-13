@@ -2273,7 +2273,9 @@ public sealed partial class TopBarWindow : Window
                 revealDepth),
             PointerOverDock: pointerOverBar,
             InteractionActive: _menuOpen || _searchActive
-                || _todoFlyout?.IsOpen == true || _clockFlyout?.IsOpen == true);
+                || _todoFlyout?.IsOpen == true || _clockFlyout?.IsOpen == true,
+            // The immediate-collapse shortcut is the dock's; the bar keeps its debounce.
+            OverlapIsMaximizedWindow: false);
         if (_autoHide.Update(input, DateTimeOffset.UtcNow))
         {
             if (_autoHide.IsShown)
