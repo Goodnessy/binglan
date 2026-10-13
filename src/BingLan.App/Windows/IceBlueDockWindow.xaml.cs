@@ -1119,7 +1119,14 @@ public partial class IceBlueDockWindow : Window
     private bool ForegroundWindowRect(out PixelRect bounds, out nint window)
     {
         bounds = default;
-        window = DockNativeMethods.GetForegroundWindow();
+        // While the top bar's search session holds the foreground, keep evaluating the
+        // window it was borrowed from: focusing the box must not read as the desktop
+        // coming back and show a dock that was hidden for a maximized window in front.
+        var (searchHolder, searchBorrowed) = TopBarWindow.SearchForeground;
+        window = DockForegroundRules.EffectiveForeground(
+            DockNativeMethods.GetForegroundWindow(),
+            searchHolder,
+            searchBorrowed);
         if (window == 0 || window == _handle || DockNativeMethods.IsIconic(window))
         {
             return false;

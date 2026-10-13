@@ -26,6 +26,9 @@ internal static class TopBarWindowTests
     [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
     private static extern nint GetWindowLongPtr(nint window, int index);
 
+    [DllImport("user32.dll")]
+    private static extern nint GetForegroundWindow();
+
     [DllImport("user32.dll", EntryPoint = "GetWindowRect")]
     private static extern bool GetWindowRect(nint window, out NativeRect rect);
 
@@ -565,15 +568,22 @@ internal static class TopBarWindowTests
             var style = (long)GetWindowLongPtr(handle, GwlExStyle);
             Assert((style & WsExNoActivateFlag) != 0, "常态应保持永不激活");
 
+            var foregroundBefore = GetForegroundWindow();
             bar.BeginSearchSession();
             pump();
             Assert(bar.SearchSessionActive, "会话应处于激活状态");
             style = (long)GetWindowLongPtr(handle, GwlExStyle);
             Assert((style & WsExNoActivateFlag) == 0, "会话期间允许窗口激活接收键盘");
+            // The dock looks through the session to the window it borrowed the
+            // foreground from, so focusing the box cannot read as the desktop back.
+            Assert(TopBarWindow.SearchForeground.Holder == handle, "会话前台持有者应是顶栏自身");
+            Assert(TopBarWindow.SearchForeground.Borrowed == foregroundBefore,
+                "会话应报告借用前台前的原窗口");
 
             PressKey(bar.SearchBox!, System.Windows.Input.Key.Escape);
             pump();
             Assert(!bar.SearchSessionActive, "Escape 应结束会话");
+            Assert(TopBarWindow.SearchForeground == (0, 0), "会话结束应清空前台借用信息");
             style = (long)GetWindowLongPtr(handle, GwlExStyle);
             Assert((style & WsExNoActivateFlag) != 0, "会话结束应恢复永不激活");
 

@@ -49,6 +49,7 @@ Run("v25 状态迁移后把手位置保持默认角位", TestDockStateV25Migrati
 Run("Dock 状态保存与加载往返保留顺序与取值", TestDockStateRoundTrip);
 Run("重复固定项保存后应去重", TestDockStateDuplicatePinsDeduped);
 Run("隐藏的应用不出现在 Dock 且可恢复", TestDockHiddenApps);
+Run("搜索会话持有前台时 Dock 评估借用前原窗口", TestDockForegroundRules);
 
 if (failures.Count > 0)
 {
@@ -1339,6 +1340,25 @@ static TrackedWindow Window(
     string? executablePath,
     bool isForeground = false) =>
     new((nint)handle, processId, title, appUserModelId, executablePath, isForeground, false);
+
+static void TestDockForegroundRules()
+{
+    Assert(
+        DockForegroundRules.EffectiveForeground(40, 40, 30) == 30,
+        "搜索会话持有前台时应评估借用前的原窗口");
+    Assert(
+        DockForegroundRules.EffectiveForeground(50, 40, 30) == 50,
+        "前台不在会话持有者窗口上时不替换");
+    Assert(
+        DockForegroundRules.EffectiveForeground(50, 0, 30) == 50,
+        "没有会话持有者时不替换");
+    Assert(
+        DockForegroundRules.EffectiveForeground(50, 40, 0) == 50,
+        "没有借用前的窗口时不替换");
+    Assert(
+        DockForegroundRules.EffectiveForeground(50, 40, 40) == 50,
+        "会话从桌面自身开始（借用者即顶栏）时不替换");
+}
 
 static void Assert(bool condition, string message)
 {

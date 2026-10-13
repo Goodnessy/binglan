@@ -156,6 +156,9 @@ public sealed partial class TopBarWindow : Window
     /// <summary>Whether a search session holds the bar activatable and the keyboard.</summary>
     private bool _searchActive;
     private nint _searchPreviousForeground;
+    // The bar whose search session currently holds the foreground, for other windows
+    // (the dock) that must keep evaluating the window the session borrowed it from.
+    private static TopBarWindow? _searchSessionOwner;
 
     private bool _searchHotkeyRegistered;
     private string? _searchHotkeyRegisteredText;
@@ -1690,6 +1693,7 @@ public sealed partial class TopBarWindow : Window
         }
 
         _searchActive = true;
+        _searchSessionOwner = this;
         _searchPreviousForeground = DockNativeMethods.GetForegroundWindow();
         SetSearchActivatable(true);
         try
@@ -1726,6 +1730,10 @@ public sealed partial class TopBarWindow : Window
         }
 
         _searchActive = false;
+        if (ReferenceEquals(_searchSessionOwner, this))
+        {
+            _searchSessionOwner = null;
+        }
         CloseSearchFlyout();
         if (_searchBox is { } searchBox)
         {
@@ -1893,6 +1901,22 @@ public sealed partial class TopBarWindow : Window
     internal IReadOnlyList<TopBarSearchCandidate> SearchResults => _searchResults;
 
     internal bool SearchSessionActive => _searchActive;
+
+    /// <summary>
+    /// While a search session holds the foreground, the bar holding it and the window
+    /// it was borrowed from; both zero when no session is active. Lets the dock keep
+    /// evaluating the foreground as it was before the box took it.
+    /// </summary>
+    internal static (nint Holder, nint Borrowed) SearchForeground
+    {
+        get
+        {
+            var owner = _searchSessionOwner;
+            return owner is null || !owner._searchActive || owner._closing
+                ? (0, 0)
+                : (owner._handle, owner._searchPreviousForeground);
+        }
+    }
 
     private static System.Windows.Media.SolidColorBrush FrozenBrush(string color)
     {
