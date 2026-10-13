@@ -57,6 +57,7 @@ internal static class TopBarWindowTests
         TodoFlyoutShowsItemsAndCloses(show, pump);
         WeatherHoverOpensTooltip(show, pump);
         SearchShowsResultsAndOpens(show, pump);
+        SearchImeKeysYieldAndOpenDefers(show, pump);
         SearchSessionTogglesActivation(show, pump);
         SearchModuleSwitchHidesBox(show, pump);
     }
@@ -542,6 +543,54 @@ internal static class TopBarWindowTests
                 "回车应打开选中的第一条结果");
             Assert(!bar.SearchSessionActive && box.Text == string.Empty,
                 "回车打开后应结束会话并清空输入框");
+        }
+        finally
+        {
+            bar.Close();
+            pump();
+        }
+    }
+
+    /// <summary>
+    /// Keys a composing IME wrapped (Key.ImeProcessed) belong to the IME: opening a
+    /// result or ending the session from inside one tears the composition down
+    /// re-entrantly and fail-fasts the process (real-machine crash with WeChat IME:
+    /// composition Enter → synchronous session end → WPF text-store FailFast). A
+    /// plain Return may open, but only after the key's own processing finished.
+    /// </summary>
+    private static void SearchImeKeysYieldAndOpenDefers(Action<Window> show, Action pump)
+    {
+        var state = BarState();
+        state.VisibilityMode = TopBarVisibilityMode.SmartHide;
+        using var sampler = new WindowsPerformanceSamplingService();
+        var environment = new FakeEnvironment { SearchCandidates = SearchSource() };
+        var bar = new TopBarWindow(state, new DesktopStyleState(), environment, sampler);
+        show(bar);
+        try
+        {
+            var box = bar.SearchBox
+                ?? throw new InvalidOperationException("搜索模块应提供输入框");
+            bar.BeginSearchSession();
+            box.Text = "wx";
+            bar.PumpSearch();
+            Assert(WaitUntil(pump, () => bar.SearchResults.Count > 0), "搜索应有结果");
+
+            // 组合态中的键：让渡给输入法（合成事件无法伪造 ImeProcessedKey，恰好只驱动
+            // Key 编码这条门控），既不打开结果也不结束会话。
+            var opened = environment.OpenedTargets.Count;
+            PressKey(box, System.Windows.Input.Key.ImeProcessed);
+            pump();
+            Assert(environment.OpenedTargets.Count == opened, "组合态按键不得打开结果");
+            Assert(bar.SearchSessionActive, "组合态按键不得结束会话");
+
+            // 普通回车：同步栈内不得有任何动作，一拍后才打开。
+            PressKey(box, System.Windows.Input.Key.Return);
+            Assert(environment.OpenedTargets.Count == opened,
+                "打开动作必须延后到键消息处理之后（同步切换前台会触发输入法重入崩溃）");
+            Assert(WaitUntil(pump, () => environment.OpenedTargets.Count == opened + 1),
+                "延后一拍后应打开选中的结果");
+            Assert(!bar.SearchSessionActive && box.Text == string.Empty,
+                "打开后应结束会话并清空输入框");
         }
         finally
         {

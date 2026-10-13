@@ -1263,7 +1263,7 @@ public sealed partial class TopBarWindow : Window
             // rows are not focusable, so clicking a result does not land here.
             if (_searchActive)
             {
-                EndSearchSession();
+                EndSearchSessionAfterInput();
             }
         };
         box.PreviewMouseLeftButtonDown += (_, _) =>
@@ -1479,7 +1479,7 @@ public sealed partial class TopBarWindow : Window
         // Rows are not focusable: keyboard focus stays in the box, which drives the
         // selection, and one click opens exactly one result.
         row.MouseEnter += (_, _) => SelectSearchRow(index);
-        row.MouseLeftButtonUp += (_, _) => OpenSearchResult(index);
+        row.MouseLeftButtonUp += (_, _) => OpenSearchResultAfterInput(index);
         return row;
     }
 
@@ -1526,17 +1526,27 @@ public sealed partial class TopBarWindow : Window
 
     private void OnSearchBoxKeyDown(object sender, KeyEventArgs args)
     {
-        // A Chinese IME wraps real keys as ImeProcessed; the box cares about the key
-        // underneath. Physical Enter reports Key.Return (Key.Enter is another value).
-        var key = args.Key == Key.ImeProcessed ? args.ImeProcessedKey : args.Key;
-        switch (key)
+        // A Chinese IME reports every key it processes mid-composition — Return
+        // commits the raw letters, Escape cancels, the arrows page candidates — as
+        // Key.ImeProcessed, and the same physical keys arrive plain once no
+        // composition is running (verified against WeChat IME). Those keys belong
+        // to the IME: ending the session from inside one makes the foreground
+        // switch tear the composition down synchronously while re-entering WPF's
+        // text store, which fail-fasts the whole process.
+        if (args.Key == Key.ImeProcessed)
+        {
+            return;
+        }
+
+        // Physical Enter reports Key.Return (Key.Enter is another value).
+        switch (args.Key)
         {
             case Key.Escape:
-                EndSearchSession();
+                EndSearchSessionAfterInput();
                 args.Handled = true;
                 break;
             case Key.Return:
-                OpenSearchResult(_searchSelected);
+                OpenSearchResultAfterInput(_searchSelected);
                 args.Handled = true;
                 break;
             case Key.Down:
@@ -1716,6 +1726,22 @@ public sealed partial class TopBarWindow : Window
         LoadSearchCandidates();
     }
 
+    /// <summary>
+    /// Ends the search session one dispatcher turn later. Teardown returns the
+    /// borrowed foreground to the previous window; doing that synchronously inside
+    /// a key, focus or activation message makes a composing IME finish its
+    /// composition while re-entering the WPF text store, which fail-fasts the
+    /// process (observed with WeChat IME). Deferring puts the switch after the
+    /// message that caused it.
+    /// </summary>
+    private void EndSearchSessionAfterInput() =>
+        Dispatcher.BeginInvoke(EndSearchSession, DispatcherPriority.Input);
+
+    /// <summary>Opens a result one dispatcher turn later, for the same reason as
+    /// <see cref="EndSearchSessionAfterInput"/>.</summary>
+    private void OpenSearchResultAfterInput(int index) =>
+        Dispatcher.BeginInvoke(() => OpenSearchResult(index), DispatcherPriority.Input);
+
     /// <summary>Clears the box, closes the flyout and returns the bar to never-activating.</summary>
     internal void EndSearchSession()
     {
@@ -1758,7 +1784,7 @@ public sealed partial class TopBarWindow : Window
         base.OnDeactivated(args);
         if (_searchActive)
         {
-            EndSearchSession();
+            EndSearchSessionAfterInput();
         }
     }
 
@@ -1813,7 +1839,7 @@ public sealed partial class TopBarWindow : Window
             handled = true;
             if (_searchActive)
             {
-                EndSearchSession();
+                EndSearchSessionAfterInput();
             }
             else
             {
