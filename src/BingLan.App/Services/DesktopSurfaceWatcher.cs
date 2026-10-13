@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Windows.Threading;
 using BingLan.App.Interop;
 using BingLan.Core.Desktop;
@@ -100,9 +101,9 @@ internal sealed class DesktopSurfaceWatcher : IDisposable
     /// <summary>
     /// Reads whether the desktop surface covers the cards: Progman has been raised
     /// and no visible, un-minimised window of another program is left above it.
-    /// Topmost windows (taskbar, dock), Explorer's own shell windows, DWM-cloaked
-    /// windows (suspended UWP hosts report visible while off screen) and the cards
-    /// themselves do not count.
+    /// Topmost windows (taskbar, dock), Explorer's own shell surface windows — but
+    /// not its file-manager windows — DWM-cloaked windows (suspended UWP hosts
+    /// report visible while off screen) and the cards themselves do not count.
     /// </summary>
     private void Evaluate()
     {
@@ -136,11 +137,10 @@ internal sealed class DesktopSurfaceWatcher : IDisposable
                     return true;
                 }
                 NativeMethods.GetWindowThreadProcessId(window, out var process);
-                if (process == shellProcess)
+                if (DesktopSurfaceRules.CountsAsOrdinaryWindow(process == shellProcess, ClassNameOf(window)))
                 {
-                    return true;
+                    blockers++;
                 }
-                blockers++;
                 // A few are enough to prove ordinary windows are still around.
                 return blockers < 3;
             }, 0);
@@ -152,5 +152,13 @@ internal sealed class DesktopSurfaceWatcher : IDisposable
         }
         IsDesktopShown = shown;
         Changed?.Invoke();
+    }
+
+    private static string ClassNameOf(nint window)
+    {
+        var className = new StringBuilder(64);
+        return DockNativeMethods.GetClassNameW(window, className, className.Capacity) > 0
+            ? className.ToString()
+            : string.Empty;
     }
 }

@@ -23,6 +23,24 @@ internal static class DesktopSurfaceTests
             "未提升且桌面未显示时应不动");
     }
 
+    internal static void TestOrdinaryWindowClassification()
+    {
+        Check(DesktopSurfaceRules.CountsAsOrdinaryWindow(false, "Chrome_WidgetWin_1"),
+            "其他进程的窗口应算普通窗口");
+        Check(DesktopSurfaceRules.CountsAsOrdinaryWindow(false, string.Empty),
+            "取不到类名的其他进程窗口仍应算普通窗口");
+        Check(DesktopSurfaceRules.CountsAsOrdinaryWindow(true, "CabinetWClass"),
+            "资源管理器窗口属于外壳进程，仍应算普通窗口，打开后组件须落到它下面");
+        Check(DesktopSurfaceRules.CountsAsOrdinaryWindow(true, "ExploreWClass"),
+            "旧式资源管理器窗口也应算普通窗口");
+        Check(!DesktopSurfaceRules.CountsAsOrdinaryWindow(true, "WorkerW"),
+            "外壳壁纸窗口不应算普通窗口");
+        Check(!DesktopSurfaceRules.CountsAsOrdinaryWindow(true, "Shell_TrayWnd"),
+            "任务栏不应算普通窗口");
+        Check(!DesktopSurfaceRules.CountsAsOrdinaryWindow(true, "Progman"),
+            "桌面表面自身不应算普通窗口");
+    }
+
     private static void Check(bool condition, string message)
     {
         if (!condition)
