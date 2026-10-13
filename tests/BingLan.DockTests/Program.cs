@@ -135,7 +135,7 @@ static void TestDockIconSize()
     AssertEqual(DockLayoutMetrics.ItemCellDip, DockLayoutMetrics.ItemCell(DockState.DefaultIconSize), "默认图标大小应保持原单元宽度");
     AssertEqual(DockLayoutMetrics.DockThicknessDip, DockLayoutMetrics.Thickness(DockState.DefaultIconSize), "默认图标大小应保持原高度");
     AssertEqual(88d, DockLayoutMetrics.ItemCell(64), "64 图标的单元宽度");
-    AssertEqual(100d, DockLayoutMetrics.Thickness(64), "64 图标的 Dock 高度");
+    AssertEqual(92d, DockLayoutMetrics.Thickness(64), "64 图标的 Dock 高度（上下内边距收紧为 5）");
     Assert(
         DockLayoutMetrics.ContentLengthForItems(5, 64) > DockLayoutMetrics.ContentLengthForItems(5, 32),
         "图标越大 Dock 越宽");

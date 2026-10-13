@@ -2,7 +2,7 @@ namespace BingLan.Core.Dock;
 
 public static class DockLayoutMetrics
 {
-    public const double DockThicknessDip = 76;
+    public const double DockThicknessDip = 68;
     public const double EdgeGapDip = 28;
     public const double AxisPaddingDip = 14;
     public const double ItemCellDip = 64;

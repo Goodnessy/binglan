@@ -45,7 +45,7 @@
         </Style>
     </Window.Resources>
     <Border x:Name="DockSurface"
-            Padding="14,9"
+            Padding="14,5"
             Background="{DynamicResource DockSurfaceBrush}"
             BorderBrush="{DynamicResource DockSurfaceBorderBrush}"
             BorderThickness="1"
