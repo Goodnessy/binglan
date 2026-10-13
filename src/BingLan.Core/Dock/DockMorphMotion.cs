@@ -27,7 +27,7 @@ public static class DockMorphMotion
     public static TimeSpan CollapseDuration(MotionLevel motion) =>
         motion == MotionLevel.Reduced
             ? TimeSpan.FromMilliseconds(100)
-            : TimeSpan.FromMilliseconds(260);
+            : TimeSpan.FromMilliseconds(360);
 
     public static TimeSpan ReappearDuration(MotionLevel motion) =>
         motion == MotionLevel.Reduced

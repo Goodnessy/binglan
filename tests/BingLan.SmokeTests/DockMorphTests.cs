@@ -32,12 +32,12 @@ internal static class DockMorphTests
             throw new InvalidOperationException("只有 Standard 档应把整行吸向悬浮图标");
         }
 
-        // 时长：展开 200ms、收起 260ms、原地浮出 200ms；Reduced 全部收短。
+        // 时长：展开 200ms、收起 360ms、原地浮出 200ms；Reduced 全部收短。
         if (DockMorphMotion.ExpandDuration(MotionLevel.Standard) != TimeSpan.FromMilliseconds(200)
-            || DockMorphMotion.CollapseDuration(MotionLevel.Standard) != TimeSpan.FromMilliseconds(260)
+            || DockMorphMotion.CollapseDuration(MotionLevel.Standard) != TimeSpan.FromMilliseconds(360)
             || DockMorphMotion.ReappearDuration(MotionLevel.Standard) != TimeSpan.FromMilliseconds(200))
         {
-            throw new InvalidOperationException("Standard 档形变时长应为 200/260/200ms");
+            throw new InvalidOperationException("Standard 档形变时长应为 200/360/200ms");
         }
         if (DockMorphMotion.ExpandDuration(MotionLevel.Reduced) != TimeSpan.FromMilliseconds(100)
             || DockMorphMotion.CollapseDuration(MotionLevel.Reduced) != TimeSpan.FromMilliseconds(100)
