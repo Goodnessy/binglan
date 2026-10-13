@@ -1662,7 +1662,7 @@ public partial class SettingsWindow : Window
 
         _dockState.SurfaceOpacity = e.NewValue;
         DockOpacityText.Text = $"{e.NewValue * 100:0}%";
-        ApplyDockChange("已调整 Dock 不透明度");
+        ApplyDockChange("已调整 Dock 玻璃浓度");
     }
 
     private void DockColorEditor_KeyDown(object sender, System.Windows.Input.KeyEventArgs e)

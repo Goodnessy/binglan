@@ -1142,15 +1142,15 @@
                                         <Button Margin="8,0,0,0" Content="选择颜色…" Click="DockChooseColor_Click"/>
                                     </StackPanel>
                                 </local:SettingsRow>
-                                <local:SettingsRow Style="{StaticResource NestedSettingsRowStyle}" Header="不透明度">
+                                <local:SettingsRow Style="{StaticResource NestedSettingsRowStyle}" Header="玻璃浓度">
                                     <StackPanel Orientation="Horizontal">
                                         <Slider x:Name="DockOpacitySlider"
                                                 Width="220"
-                                                Minimum="0"
-                                                Maximum="1"
+                                                Minimum="0.05"
+                                                Maximum="0.96"
                                                 SmallChange="0.02"
                                                 LargeChange="0.1"
-                                                AutomationProperties.Name="Dock 不透明度"
+                                                AutomationProperties.Name="Dock 玻璃浓度"
                                                 ValueChanged="DockOpacity_Changed"/>
                                         <TextBlock x:Name="DockOpacityText" Style="{StaticResource ValueTextStyle}"/>
                                     </StackPanel>

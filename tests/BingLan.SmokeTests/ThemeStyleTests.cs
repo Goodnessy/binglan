@@ -73,8 +73,11 @@ internal static class ThemeStyleTests
         ownDock.SurfaceColor = "#FFFFFF";
         Check(DesktopStyleRules.Dock(dockStyle, ownDock).RunningDot == "#C21F3A55", "浅色且较不透明的 Dock 运行点应为深色");
         ownDock.SurfaceOpacity = 0;
+        Check(ownDock.SurfaceOpacity == DesktopStyleRules.MinimumGlassDensity, "自定义玻璃浓度下限应与全局玻璃浓度一致（5%）");
         var clearOwn = DesktopStyleRules.Dock(dockStyle, ownDock);
-        Check(clearOwn.Surface == "#01FFFFFF" && clearOwn.Border == "#00FFFFFF", "不透明度 0 时只留可点击的最低底色，不画边框");
+        Check(clearOwn.Surface == "#0DFFFFFF", "玻璃浓度下限 5% 只留淡淡的底色以便点击空隙");
+        ownDock.SurfaceOpacity = 1;
+        Check(ownDock.SurfaceOpacity == DesktopStyleRules.MaximumGlassDensity, "自定义玻璃浓度上限应与全局玻璃浓度一致（96%）");
         ownDock.FollowCardLook = true;
         Check(DesktopStyleRules.Dock(dockStyle, ownDock) == DesktopStyleRules.Dock(dockStyle), "跟随卡片时忽略 Dock 自己的颜色");
         var invalid = new DockState { SurfaceColor = "red", SurfaceOpacity = double.NaN };

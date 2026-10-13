@@ -285,7 +285,7 @@ public static class DockPinRules
 
         state.SurfaceColor = WidgetAppearanceRules.CoerceColorOrDefault(state.SurfaceColor, DockState.DefaultSurfaceColor);
         state.SurfaceOpacity = double.IsFinite(state.SurfaceOpacity)
-            ? Math.Clamp(state.SurfaceOpacity, 0d, 1d)
+            ? Math.Clamp(state.SurfaceOpacity, DesktopStyleRules.MinimumGlassDensity, DesktopStyleRules.MaximumGlassDensity)
             : DockState.DefaultSurfaceOpacity;
 
         state.MonitorDeviceName = string.IsNullOrWhiteSpace(state.MonitorDeviceName)

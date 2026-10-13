@@ -69,6 +69,17 @@ public sealed class DockState
     /// <summary>The dock's own colour, used when it does not follow the card material.</summary>
     public string SurfaceColor { get; set; } = DefaultSurfaceColor;
 
-    /// <summary>The dock's own opacity from 0 to 1, used when it does not follow the cards.</summary>
-    public double SurfaceOpacity { get; set; } = DefaultSurfaceOpacity;
+    private double _surfaceOpacity = DefaultSurfaceOpacity;
+
+    /// <summary>
+    /// The dock's own glass density when it does not follow the cards, presented with
+    /// the same 5–96% range as the shared glass density.
+    /// </summary>
+    public double SurfaceOpacity
+    {
+        get => _surfaceOpacity;
+        set => _surfaceOpacity = double.IsFinite(value)
+            ? Math.Clamp(value, DesktopStyleRules.MinimumGlassDensity, DesktopStyleRules.MaximumGlassDensity)
+            : DefaultSurfaceOpacity;
+    }
 }
