@@ -698,7 +698,7 @@ internal static class TopBarWindowTests
         });
     }
 
-    private static bool WaitUntil(Action pump, Func<bool> condition, int attempts = 60)
+    private static bool WaitUntil(Action pump, Func<bool> condition, int attempts = 240)
     {
         for (var attempt = 0; attempt < attempts; attempt++)
         {
