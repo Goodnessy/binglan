@@ -2,7 +2,7 @@ namespace BingLan.Core.Models;
 
 public sealed class AppState
 {
-    public const int CurrentSchemaVersion = 28;
+    public const int CurrentSchemaVersion = 29;
 
     public int SchemaVersion { get; set; } = CurrentSchemaVersion;
     public List<TodoWidgetState> TodoWidgets { get; set; } = [];

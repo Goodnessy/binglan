@@ -26,7 +26,10 @@ Run("任务栏检查点与恢复计划", TestTaskbarRecovery);
 Run("任务栏连续失败熔断", TestTaskbarBreaker);
 Run("任务栏设置持久化与 v13-v14 迁移", TestTaskbarPersistence);
 Run("三种桌面模式编排 Dock 与任务栏", TestDesktopModes);
+Run("Dock 与悬浮图标形变动效规格", DockMorphTests.Run);
+Run("Dock 智能隐藏的延迟与最大化立即收起", DockSmartHideTests.Run);
 Run("顶端信息条模型、持久化与编排", TopBarTests.Run);
+Run("顶栏搜索匹配、热键与 v29 迁移", TopBarSearchTests.Run);
 Run("备份列表与重启后恢复", TestBackupRestore);
 Run("首次引导只对新安装显示", TestOnboardingFlagMigration);
 Run("主题导出不含个人信息", TestThemeExportExcludesPersonalInfo);
@@ -42,6 +45,7 @@ Run("带预览图的导出仍不含个人信息", ThemePreviewTests.TestExportWi
 Run("清爽桌面只改图标位", CleanDesktopTests.TestOnlyTheIconBitChanges);
 Run("清爽桌面隐藏与恢复计划", CleanDesktopTests.TestHideAndRestorePlans);
 Run("显示桌面判定与提升回落规则", DesktopSurfaceTests.TestShownStateAndActions);
+Run("显示桌面判定中外壳窗口的归类", DesktopSurfaceTests.TestOrdinaryWindowClassification);
 Run("更新版本号与每日检查节奏", UpdateServiceTests.TestVersionAndSchedule);
 Run("更新发布信息解析与安全过滤", UpdateServiceTests.TestReleaseParsing);
 Run("检查更新结果与请求内容（离线桩）", UpdateServiceTests.TestCheck);

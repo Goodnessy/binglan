@@ -1,3 +1,5 @@
+using BingLan.Core.TopBar;
+
 namespace BingLan.Core.Models;
 
 public enum TopBarVisibilityMode
@@ -6,7 +8,9 @@ public enum TopBarVisibilityMode
     SmartHide
 }
 
-/// <summary>The nine read-only modules the top bar can show, in display order.</summary>
+/// <summary>The top bar's read-only modules, in display order. The search box sits in
+/// the bar's centre regardless of this order; its kind is here so it shares the module
+/// switch machinery with the rest.</summary>
 public enum TopBarModuleKind
 {
     TodoSummary,
@@ -17,7 +21,8 @@ public enum TopBarModuleKind
     Volume,
     Network,
     Battery,
-    Clock
+    Clock,
+    Search
 }
 
 public sealed class TopBarModuleSwitches
@@ -31,6 +36,7 @@ public sealed class TopBarModuleSwitches
     public bool Network { get; set; } = true;
     public bool Battery { get; set; } = true;
     public bool Clock { get; set; } = true;
+    public bool Search { get; set; } = true;
 }
 
 /// <summary>
@@ -45,6 +51,10 @@ public sealed class TopBarState
     public const int MaximumAttentionApps = 3;
     public const string DefaultSurfaceColor = "#1E1F24";
     public const double DefaultSurfaceOpacity = 0.82d;
+    // Win-key combos are owned by the system and Edge on stock Windows 11 (Win+Shift+F
+    // is Edge's own search bar), so the default lives in the Ctrl+Alt space; the
+    // recorder can retarget it to anything free.
+    public const string DefaultSearchHotkey = "Ctrl+Alt+F";
 
     public bool IsEnabled { get; set; }
 
@@ -69,6 +79,10 @@ public sealed class TopBarState
     public string SurfaceColor { get; set; } = DefaultSurfaceColor;
 
     public double SurfaceOpacity { get; set; } = DefaultSurfaceOpacity;
+
+    /// <summary>The global focus-search hotkey text ("Win+Shift+F"); machine-local and
+    /// never exported with a theme. Invalid or missing text falls back to the default.</summary>
+    public string SearchHotkey { get; set; } = DefaultSearchHotkey;
 }
 
 public static class TopBarRules
@@ -87,6 +101,7 @@ public static class TopBarRules
         TopBarModuleKind.Network => switches.Network,
         TopBarModuleKind.Battery => switches.Battery,
         TopBarModuleKind.Clock => switches.Clock,
+        TopBarModuleKind.Search => switches.Search,
         _ => false
     };
 
@@ -103,6 +118,7 @@ public static class TopBarRules
             case TopBarModuleKind.Network: switches.Network = on; break;
             case TopBarModuleKind.Battery: switches.Battery = on; break;
             case TopBarModuleKind.Clock: switches.Clock = on; break;
+            case TopBarModuleKind.Search: switches.Search = on; break;
         }
     }
 
@@ -130,6 +146,11 @@ public static class TopBarRules
         else
         {
             state.SurfaceOpacity = Math.Clamp(state.SurfaceOpacity, 0d, 1d);
+        }
+        // A hand-edited or foreign hotkey string must not take over the registration.
+        if (!TopBarSearchRules.IsValidHotkey(state.SearchHotkey))
+        {
+            state.SearchHotkey = TopBarState.DefaultSearchHotkey;
         }
     }
 }

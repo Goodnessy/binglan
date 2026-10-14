@@ -32,6 +32,15 @@ public static class DesktopSurfaceRules
     public static bool IsDesktopShown(bool desktopSurfaceFound, int ordinaryWindowsAboveSurface) =>
         desktopSurfaceFound && ordinaryWindowsAboveSurface == 0;
 
+    /// <summary>
+    /// Whether a window above the surface counts as ordinary. Windows of the shell's
+    /// own process are its surface windows (wallpaper, taskbars) — except the
+    /// file-manager windows, which run in explorer.exe too but are ordinary windows:
+    /// one being open means the desktop is not shown, and the cards must go below it.
+    /// </summary>
+    public static bool CountsAsOrdinaryWindow(bool shellProcess, string className) =>
+        !shellProcess || className is "CabinetWClass" or "ExploreWClass";
+
     /// <summary>What the cards should do now, given whether they were already lifted.</summary>
     public static DesktopSurfaceAction ActionFor(bool cardsRaised, bool desktopShown) =>
         (cardsRaised, desktopShown) switch

@@ -54,8 +54,14 @@
                         DockPanel.Dock="Right"
                         Orientation="Horizontal"/>
             <StackPanel x:Name="LeftModules"
+                        DockPanel.Dock="Left"
                         Orientation="Horizontal"
                         VerticalAlignment="Center"/>
+            <!--The remaining space between the two module groups; the search box and
+                its flyout live here, centred.-->
+            <Grid x:Name="CenterHost"
+                  HorizontalAlignment="Center"
+                  VerticalAlignment="Center"/>
         </DockPanel>
     </Border>
 </Window>

@@ -214,5 +214,29 @@ public partial class DockHandleWindow : Window
         HandleGlyphScale.BeginAnimation(System.Windows.Media.ScaleTransform.ScaleYProperty, animation);
     }
 
+    // The landing bounce when the dock row collapses into the handle: the glyph pops
+    // once so the absorption reads as a single motion. Standard motion level only,
+    // and never against the system "show animations" switch.
+    internal void Pulse()
+    {
+        if (!SystemParameters.ClientAreaAnimation || IceBlueDockWindow.Motion != MotionLevel.Standard)
+        {
+            return;
+        }
+
+        var duration = DockMorphMotion.HandlePulseDuration;
+        var pulse = new DoubleAnimationUsingKeyFrames { Duration = new Duration(duration) };
+        pulse.KeyFrames.Add(new EasingDoubleKeyFrame(1.15d, KeyTime.FromTimeSpan(duration / 2))
+        {
+            EasingFunction = new QuadraticEase()
+        });
+        pulse.KeyFrames.Add(new EasingDoubleKeyFrame(1d, KeyTime.FromTimeSpan(duration))
+        {
+            EasingFunction = new QuadraticEase()
+        });
+        HandleGlyphScale.BeginAnimation(System.Windows.Media.ScaleTransform.ScaleXProperty, pulse);
+        HandleGlyphScale.BeginAnimation(System.Windows.Media.ScaleTransform.ScaleYProperty, pulse);
+    }
+
     private readonly record struct PixelPoint(int X, int Y);
 }

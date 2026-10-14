@@ -378,6 +378,7 @@ public static class ThemeRules
         Volume = source.Volume,
         Network = source.Network,
         Battery = source.Battery,
+        Search = source.Search,
         Clock = source.Clock
     };
 

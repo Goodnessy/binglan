@@ -470,6 +470,12 @@ public sealed class LocalStateStore
             // nothing else has to move.
             state.SchemaVersion = 28;
         }
+        if (state.SchemaVersion < 29)
+        {
+            // The top bar gains the centre search box: its module switch defaults on
+            // and the hotkey keeps the default text, both via TopBarRules.Normalize.
+            state.SchemaVersion = 29;
+        }
         state.Updates ??= new UpdateState();
         state.QuickPlaces = QuickPlaceRules.Normalize(state.QuickPlaces);
         state.DismissedDesktopCategories = (state.DismissedDesktopCategories ?? [])
