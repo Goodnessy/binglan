@@ -192,12 +192,7 @@ public sealed partial class TopBarWindow : Window
         _searchDebounce = new DispatcherTimer(
             SearchDebounceInterval,
             DispatcherPriority.Background,
-            (_, _) =>
-            {
-                // One shot per edit: the timer itself repeats until stopped.
-                _searchDebounce.Stop();
-                RunSearchNow();
-            },
+            (_, _) => OnSearchDebounceTick(),
             Dispatcher);
         // A network address change is the one system fact with an event source; the
         // others ride the sampling tick.
@@ -1346,6 +1341,13 @@ public sealed partial class TopBarWindow : Window
                 ? Visibility.Visible
                 : Visibility.Collapsed;
         }
+    }
+
+    // One shot per edit: the timer itself repeats until stopped.
+    private void OnSearchDebounceTick()
+    {
+        _searchDebounce.Stop();
+        RunSearchNow();
     }
 
     /// <summary>Runs the pending search immediately instead of after the debounce.</summary>
