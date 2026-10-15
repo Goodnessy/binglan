@@ -1673,6 +1673,8 @@ public sealed partial class TopBarWindow : Window
             Child = new ScrollViewer
             {
                 MaxHeight = 44d * SearchFlyoutVisibleRows,
+                // Keep keyboard focus in the search box throughout a result click.
+                Focusable = false,
                 VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
                 HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
                 Content = rows

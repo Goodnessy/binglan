@@ -986,7 +986,28 @@ internal static class TopBarWindowTests
                 $"WPF 命中 {System.Windows.Input.Mouse.DirectlyOver?.GetType().Name ?? "无"}，位置 {System.Windows.Input.Mouse.GetPosition(row)}）");
             Assert(WindowFromPoint(readyCursor) == source.Handle,
                 "发送系统点击前鼠标应仍在结果浮层，避免点击其他应用");
-            SendMouseInputs(new MouseInput { Flags = MouseLeftDown }, new MouseInput { Flags = MouseLeftUp });
+            var focusChanges = new List<string>();
+            box.LostKeyboardFocus += (_, args) => focusChanges.Add($"失焦到 {args.NewFocus?.GetType().Name ?? "无"}");
+            bar.Deactivated += (_, _) => focusChanges.Add($"顶栏失活，前台 {GetForegroundWindow():X}");
+            SendMouseInputs(new MouseInput { Flags = MouseLeftDown });
+            try
+            {
+                Assert(WaitUntil(pump, () => rawDownCount > 0), "结果浮层应收到鼠标按下");
+                // A physical click leaves time for focus events between down and up.
+                // Sending both messages in one batch can hide premature teardown.
+                var releaseAt = Environment.TickCount64 + 150;
+                while (Environment.TickCount64 < releaseAt)
+                {
+                    pump();
+                    Thread.Sleep(10);
+                }
+                Assert(bar.SearchSessionActive && flyout.IsOpen && box.IsKeyboardFocused,
+                    $"按住结果行时搜索框应保留焦点且浮层保持打开（会话 {bar.SearchSessionActive}，浮层 {flyout.IsOpen}，焦点 {System.Windows.Input.Keyboard.FocusedElement?.GetType().Name}，{string.Join("；", focusChanges)}）");
+            }
+            finally
+            {
+                SendMouseInputs(new MouseInput { Flags = MouseLeftUp });
+            }
             if (!WaitUntil(pump, () => environment.OpenedTargets.Count >= 1))
             {
                 GetWindowRect(source.Handle, out var popupRect);
