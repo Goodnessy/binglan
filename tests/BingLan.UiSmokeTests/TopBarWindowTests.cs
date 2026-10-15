@@ -40,6 +40,57 @@ internal static class TopBarWindowTests
         public int Bottom;
     }
 
+    private struct NativePoint
+    {
+        public int X;
+        public int Y;
+    }
+
+    [DllImport("user32.dll")]
+    private static extern bool GetCursorPos(out NativePoint point);
+
+    [DllImport("user32.dll")]
+    private static extern bool SetCursorPos(int x, int y);
+
+    private const int WmLeftButtonDown = 0x0201;
+    private const int WmLeftButtonUp = 0x0202;
+    private const nint MkLeftButton = 0x0001;
+
+    [DllImport("user32.dll")]
+    private static extern bool PostMessageW(nint window, int message, nint wParam, nint lParam);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(nint window, out uint processId);
+
+    [DllImport("kernel32.dll")]
+    private static extern uint GetCurrentThreadId();
+
+    [DllImport("user32.dll")]
+    private static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool attach);
+
+    [DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(nint window);
+
+    /// <summary>
+    /// A search session always holds the foreground (the user clicked the box or
+    /// pressed the hotkey, both count as input), but Windows denies the grant when a
+    /// test runs late in the suite. WPF then routes no mouse input into the session's
+    /// flyout, so the test recreates the production foreground the way the shell
+    /// allows it.
+    /// </summary>
+    private static void ForceForeground(nint window)
+    {
+        var foregroundThread = GetWindowThreadProcessId(GetForegroundWindow(), out _);
+        var currentThread = GetCurrentThreadId();
+        if (foregroundThread == currentThread || foregroundThread == 0)
+        {
+            return;
+        }
+        _ = AttachThreadInput(currentThread, foregroundThread, true);
+        _ = SetForegroundWindow(window);
+        _ = AttachThreadInput(currentThread, foregroundThread, false);
+    }
+
     private static void Assert(bool condition, string message)
     {
         if (!condition)
@@ -60,6 +111,9 @@ internal static class TopBarWindowTests
         SearchImeKeysYieldAndOpenDefers(show, pump);
         SearchSessionTogglesActivation(show, pump);
         SearchModuleSwitchHidesBox(show, pump);
+        RateDigitsDoNotShiftSearchBox(show, pump);
+        SearchBoxSitsAtBarCentre(show, pump);
+        RealClickOnResultOpensIt(show, pump);
     }
 
     private static void WeatherHoverOpensTooltip(Action<Window> show, Action pump)
@@ -684,6 +738,201 @@ internal static class TopBarWindowTests
         }
     }
 
+    /// <summary>
+    /// The upload/download digits change width every second; the centred search box must
+    /// stay put instead of riding the performance module's resize (the reported flicker).
+    /// </summary>
+    private static void RateDigitsDoNotShiftSearchBox(Action<Window> show, Action pump)
+    {
+        var state = BarState();
+        state.VisibilityMode = TopBarVisibilityMode.SmartHide;
+        using var sampler = new ScriptedSamplingService();
+        var bar = new TopBarWindow(state, new DesktopStyleState(), new FakeEnvironment(), sampler);
+        show(bar);
+        try
+        {
+            var host = bar.SearchHost
+                ?? throw new InvalidOperationException("搜索模块应提供输入框宿主");
+            double HostX()
+            {
+                pump();
+                return host.PointToScreen(new Point(0, 0)).X;
+            }
+
+            sampler.Emit(new PerformanceSnapshot(12, 34, 0, 0, DateTimeOffset.Now));
+            var idleX = HostX();
+            sampler.Emit(new PerformanceSnapshot(
+                12, 34, 1023.9d * 1024 * 1024, 1023.9d * 1024 * 1024, DateTimeOffset.Now));
+            var busyX = HostX();
+            Assert(TextOf(ButtonByName(bar, "性能模块")).Contains("MB/s"),
+                "第二次采样应已把网速渲染为 MB/s");
+            Assert(Math.Abs(busyX - idleX) < 0.5,
+                $"网速数字变宽不应移动居中的搜索框：{idleX} → {busyX}");
+        }
+        finally
+        {
+            bar.Close();
+            pump();
+        }
+    }
+
+    /// <summary>
+    /// The box is a search field at the top centre of the screen, not a leftover in the
+    /// gap between the side modules: its centre must match the bar's centre whatever the
+    /// modules around it measure.
+    /// </summary>
+    private static void SearchBoxSitsAtBarCentre(Action<Window> show, Action pump)
+    {
+        var state = BarState();
+        state.VisibilityMode = TopBarVisibilityMode.SmartHide;
+        using var sampler = new WindowsPerformanceSamplingService();
+        var bar = new TopBarWindow(state, new DesktopStyleState(), new FakeEnvironment(), sampler);
+        show(bar);
+        try
+        {
+            var host = bar.SearchHost
+                ?? throw new InvalidOperationException("搜索模块应提供输入框宿主");
+            pump();
+            var barLeft = bar.PointToScreen(new Point(0, 0)).X;
+            var barRight = bar.PointToScreen(new Point(bar.ActualWidth, 0)).X;
+            var hostLeft = host.PointToScreen(new Point(0, 0)).X;
+            var hostRight = host.PointToScreen(new Point(host.ActualWidth, 0)).X;
+            Assert(host.ActualWidth >= 140, "搜索框不应窄于最小可用宽度");
+            Assert(Math.Abs((hostLeft + hostRight) / 2d - (barLeft + barRight) / 2d) <= 1d,
+                $"搜索框应位于顶栏正中：框心 {(hostLeft + hostRight) / 2d}，栏心 {(barLeft + barRight) / 2d}");
+        }
+        finally
+        {
+            bar.Close();
+            pump();
+        }
+    }
+
+    /// <summary>
+    /// A click on a result row must open that result through the real message path,
+    /// and the flyout must never activate — an activating popup loses the bar the
+    /// foreground mid-click, the session tears down, and the click lands nowhere (the
+    /// reported "found it, but clicking does nothing"). The click is posted into the
+    /// flyout's own window at the row's position because OS-level input injection is
+    /// unreliable on the machines this suite runs on.
+    /// </summary>
+    private static void RealClickOnResultOpensIt(Action<Window> show, Action pump)
+    {
+        var state = BarState();
+        state.VisibilityMode = TopBarVisibilityMode.SmartHide;
+        using var sampler = new WindowsPerformanceSamplingService();
+        var environment = new FakeEnvironment { SearchCandidates = SearchSource() };
+        var bar = new TopBarWindow(state, new DesktopStyleState(), environment, sampler);
+        show(bar);
+        GetCursorPos(out var originalCursor);
+        try
+        {
+            var box = bar.SearchBox
+                ?? throw new InvalidOperationException("搜索模块应提供输入框");
+            bar.BeginSearchSession();
+            Assert(WaitUntil(pump, () => environment.CandidateReads > 0),
+                "会话开始应在后台读取搜索数据源");
+            box.Text = "wx";
+            bar.PumpSearch();
+            Assert(WaitUntil(pump, () => bar.SearchResults.Count > 0), "拼音首字母应给出结果");
+            var flyout = bar.SearchFlyout
+                ?? throw new InvalidOperationException("有结果时应打开结果浮层");
+            Assert(WaitUntil(pump, () => LogicalDescendants(flyout.Child)
+                    .OfType<Border>()
+                    .Any(rowBorder => rowBorder.Tag is int && rowBorder.ActualWidth > 20)),
+                "结果行应完成布局");
+
+            var row = LogicalDescendants(flyout.Child)
+                .OfType<Border>()
+                .First(rowBorder => rowBorder.Tag is int);
+            var rowSawClick = false;
+            row.MouseLeftButtonUp += (_, _) => rowSawClick = true;
+            var cardSawClick = false;
+            ((FrameworkElement)flyout.Child).MouseLeftButtonUp += (_, _) => cardSawClick = true;
+            var topLeft = row.PointToScreen(new Point(0, 0));
+            var bottomRight = row.PointToScreen(new Point(row.ActualWidth, row.ActualHeight));
+            var targetX = (int)((topLeft.X + bottomRight.X) / 2d);
+            var targetY = (int)((topLeft.Y + bottomRight.Y) / 2d);
+            // A stray injected click would land on whatever is really under the cursor,
+            // so only click when the row provably sits inside the flyout's own window.
+            if (PresentationSource.FromVisual(flyout.Child) is not HwndSource source
+                || source.Handle == 0)
+            {
+                throw new InvalidOperationException("结果浮层应有自己的窗口");
+            }
+            var rawDownCount = 0;
+            var rawUpCount = 0;
+            source.AddHook((_, message, _, _, ref _) =>
+            {
+                if (message == 0x0201)
+                {
+                    rawDownCount++;
+                }
+                if (message == 0x0202)
+                {
+                    rawUpCount++;
+                }
+                return 0;
+            });
+            GetWindowRect(source.Handle, out var flyoutRect);
+            if (targetX < flyoutRect.Left || targetX >= flyoutRect.Right
+                || targetY < flyoutRect.Top || targetY >= flyoutRect.Bottom)
+            {
+                throw new InvalidOperationException(
+                    $"结果行不在浮层窗口内（行心 {targetX},{targetY}，浮层 {flyoutRect.Left},{flyoutRect.Top}" +
+                    $"-{flyoutRect.Right},{flyoutRect.Bottom}），拒绝注入点击");
+            }
+
+            // The popup must be never-activating: an activating popup loses the bar the
+            // foreground on click, the session tears down between the mouse's down and
+            // up, and the flyout closes under the cursor before the row sees the
+            // release — the reported "found it, but clicking does nothing".
+            var flyoutStyle = (long)GetWindowLongPtr(source.Handle, GwlExStyle);
+            Assert((flyoutStyle & WsExNoActivateFlag) != 0,
+                "结果浮层窗口应永不激活，点击不应拆散搜索会话");
+
+            SetCursorPos(targetX, targetY);
+            pump();
+            // The session's bar must be WPF-active for the flyout to route mouse
+            // input (a real session always is); recreate that foreground here.
+            ForceForeground(new WindowInteropHelper(bar).Handle);
+            pump();
+            // The click is posted straight into the flyout's own message queue at the
+            // row's client position: it goes through the real WPF routing (hit test,
+            // row handler, deferred open) and cannot be swallowed by this machine's
+            // global input state, which does eat OS-level injected clicks. What guards
+            // the activation race itself is the style assert above and the product
+            // keeping the flyout never-activating.
+            var clientX = targetX - flyoutRect.Left;
+            var clientY = targetY - flyoutRect.Top;
+            var clickPosition = (nint)(((clientY & 0xFFFF) << 16) | (clientX & 0xFFFF));
+            _ = PostMessageW(source.Handle, WmLeftButtonDown, MkLeftButton, clickPosition);
+            Thread.Sleep(40);
+            _ = PostMessageW(source.Handle, WmLeftButtonUp, 0, clickPosition);
+            if (!WaitUntil(pump, () => environment.OpenedTargets.Count >= 1))
+            {
+                GetWindowRect(source.Handle, out var popupRect);
+                throw new InvalidOperationException(
+                    "点击结果行应打开该结果" +
+                    $"（浮层收到原始按下/抬起 {rawDownCount}/{rawUpCount}，" +
+                    $"顶栏 WPF 激活 {bar.IsActive}，鼠标命中 {System.Windows.Input.Mouse.DirectlyOver?.GetType().Name ?? "无"}，" +
+                    $"卡片收到抬起 {cardSawClick}，行收到抬起 {rowSawClick}，" +
+                    $"会话活跃 {bar.SearchSessionActive}，结果数 {bar.SearchResults.Count}，" +
+                    $"浮层矩形 {popupRect.Left},{popupRect.Top}-{popupRect.Right},{popupRect.Bottom}，" +
+                    $"行心 {targetX},{targetY}）");
+            }
+            Assert(environment.OpenedTargets[0] == @"C:\Users\a\Desktop\微信.lnk",
+                "点击的首行应是微信");
+            Assert(!bar.SearchSessionActive, "打开结果后搜索会话应结束");
+        }
+        finally
+        {
+            SetCursorPos(originalCursor.X, originalCursor.Y);
+            bar.Close();
+            pump();
+        }
+    }
+
     private static void PressKey(UIElement element, System.Windows.Input.Key key)
     {
         var source = PresentationSource.FromVisual(element)
@@ -777,6 +1026,36 @@ internal static class TopBarWindowTests
         public void ExitApp()
         {
         }
+    }
+
+    /// <summary>A sampling service the test drives by hand, for deterministic ticks.</summary>
+    private sealed class ScriptedSamplingService : IPerformanceSamplingService
+    {
+        public event Action<PerformanceSnapshot>? Sampled;
+
+        public bool IsRunning => false;
+
+        public PerformanceSamplingMode Mode => PerformanceSamplingMode.Normal;
+
+        public TimeSpan CurrentInterval => PerformanceSamplingRules.NormalInterval;
+
+        public void Start()
+        {
+        }
+
+        public void SetMode(PerformanceSamplingMode mode)
+        {
+        }
+
+        public void Stop()
+        {
+        }
+
+        public void Dispose()
+        {
+        }
+
+        internal void Emit(PerformanceSnapshot snapshot) => Sampled?.Invoke(snapshot);
     }
 
     private static void TodoFlyoutShowsItemsAndCloses(Action<Window> show, Action pump)

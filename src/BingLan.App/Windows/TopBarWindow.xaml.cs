@@ -197,6 +197,12 @@ public sealed partial class TopBarWindow : Window
         // A network address change is the one system fact with an event source; the
         // others ride the sampling tick.
         System.Net.NetworkInformation.NetworkChange.NetworkAddressChanged += OnNetworkAddressChanged;
+        // The centred search box must not sit on top of the side modules when they
+        // leave little room: every size change on the bar or either module group
+        // re-clamps the box width around the true centre.
+        Surface.SizeChanged += (_, _) => UpdateSearchHostWidth();
+        LeftModules.SizeChanged += (_, _) => UpdateSearchHostWidth();
+        RightModules.SizeChanged += (_, _) => UpdateSearchHostWidth();
         BuildContextMenu();
     }
 
@@ -501,6 +507,11 @@ public sealed partial class TopBarWindow : Window
         else if (kind == TopBarModuleKind.Performance)
         {
             text.MaxWidth = 360;
+            // The upload/download digits change width every second; reserving the widest
+            // steady-state readout keeps the module from resizing, which would shuffle
+            // the centred search box left and right once per tick.
+            text.MinWidth = Math.Min(360d, MeasureTextWidth(
+                "CPU 100%  内存 100%  ↑1023.9 MB/s ↓1023.9 MB/s"));
         }
 
         FrameworkElement content = glyph is null ? text : CreateIconContent(glyph, text);
@@ -551,6 +562,20 @@ public sealed partial class TopBarWindow : Window
         TextTrimming = TextTrimming.CharacterEllipsis,
         VerticalAlignment = VerticalAlignment.Center
     };
+
+    /// <summary>Measures one line of text in the bar's own typeface, in DIU.</summary>
+    private double MeasureTextWidth(string value)
+    {
+        var measured = new FormattedText(
+            value,
+            System.Globalization.CultureInfo.CurrentCulture,
+            System.Windows.FlowDirection.LeftToRight,
+            new Typeface(FontFamily, FontStyle, FontWeight, FontStretch),
+            FontSize,
+            Brushes.White,
+            VisualTreeHelper.GetDpi(this).PixelsPerDip);
+        return measured.Width;
+    }
 
     /// <summary>A status glyph from Windows' icon font followed by the value text.</summary>
     private static StackPanel CreateIconContent(string glyph, TextBlock value) => new()
@@ -1321,16 +1346,29 @@ public sealed partial class TopBarWindow : Window
             ((DockPanel)host.Child).Children[0],
             System.Windows.Controls.Dock.Left);
 
-        // A narrow centre gap (small screen, wide modules) must clip the box, not push
-        // it under the screen edge.
-        CenterHost.SizeChanged += (_, _) =>
-            host.Width = Math.Min(SearchBoxWidth, Math.Max(140, CenterHost.ActualWidth - 16));
         _searchHost = host;
         _searchBox = box;
         _searchPlaceholder = placeholder;
         CenterHost.Children.Add(host);
         _modules[TopBarModuleKind.Search] = host;
+        UpdateSearchHostWidth();
         UpdateSearchPlaceholder();
+    }
+
+    /// <summary>
+    /// Clamps the box to the room the side modules leave: full design width on a
+    /// normal bar, shrinking around the bar's centre on a narrow one. The 140 floor
+    /// keeps the box usable even when the modules meet in the middle.
+    /// </summary>
+    private void UpdateSearchHostWidth()
+    {
+        if (_searchHost is not { } host)
+        {
+            return;
+        }
+
+        var available = Surface.ActualWidth - LeftModules.ActualWidth - RightModules.ActualWidth;
+        host.Width = Math.Clamp(available - 16d, 140d, SearchBoxWidth);
     }
 
     private void UpdateSearchPlaceholder()
@@ -1479,9 +1517,11 @@ public sealed partial class TopBarWindow : Window
         };
         DockPanel.SetDock(icon, System.Windows.Controls.Dock.Left);
         // Rows are not focusable: keyboard focus stays in the box, which drives the
-        // selection, and one click opens exactly one result.
+        // selection, and one click opens exactly one result. The candidate is captured
+        // now: the deferred open must not depend on state a session teardown may have
+        // cleared in between.
         row.MouseEnter += (_, _) => SelectSearchRow(index);
-        row.MouseLeftButtonUp += (_, _) => OpenSearchResultAfterInput(index);
+        row.MouseLeftButtonUp += (_, _) => OpenSearchResultAfterInput(candidate);
         return row;
     }
 
@@ -1548,7 +1588,12 @@ public sealed partial class TopBarWindow : Window
                 args.Handled = true;
                 break;
             case Key.Return:
-                OpenSearchResultAfterInput(_searchSelected);
+                // Snapshot the target now: like the row click, the deferred open must
+                // survive a teardown racing in before the dispatcher turn.
+                if ((uint)_searchSelected < (uint)_searchResults.Count)
+                {
+                    OpenSearchResultAfterInput(_searchResults[_searchSelected]);
+                }
                 args.Handled = true;
                 break;
             case Key.Down:
@@ -1560,17 +1605,6 @@ public sealed partial class TopBarWindow : Window
                 args.Handled = true;
                 break;
         }
-    }
-
-    private void OpenSearchResult(int index)
-    {
-        if (index < 0 || index >= _searchResults.Count)
-        {
-            return;
-        }
-        var candidate = _searchResults[index];
-        EndSearchSession();
-        _environment.OpenSearchTarget(candidate);
     }
 
     /// <summary>Extracts shell icons off the UI thread for the rows just rendered.</summary>
@@ -1644,16 +1678,19 @@ public sealed partial class TopBarWindow : Window
                 Content = rows
             }
         };
+        var host = _searchHost;
         var flyout = new Popup
         {
-            PlacementTarget = _searchHost,
+            PlacementTarget = host,
             Placement = PlacementMode.Bottom,
-            HorizontalOffset = -(SearchFlyoutWidth - SearchBoxWidth) / 2d,
+            // Centred on the box whatever width it clamped to, not on the design width.
+            HorizontalOffset = -(SearchFlyoutWidth - host.ActualWidth) / 2d,
             VerticalOffset = 2,
             StaysOpen = true,
             AllowsTransparency = true,
             Child = card
         };
+        flyout.Opened += (_, _) => KeepFlyoutNonActivating(flyout);
         flyout.Closed += (_, _) =>
         {
             if (ReferenceEquals(_searchFlyout, flyout))
@@ -1674,6 +1711,31 @@ public sealed partial class TopBarWindow : Window
         _searchFlyout = null;
         _searchResults = [];
         _searchRowBorders.Clear();
+    }
+
+    /// <summary>
+    /// A WPF popup window activates on click: the click that picks a result would
+    /// deactivate the bar, which ends the session between the mouse's down and up and
+    /// closes the flyout under the cursor before the row ever sees the release — the
+    /// click lands nowhere. Making the popup's own window never-activating keeps the
+    /// bar active and the keyboard in the box for the whole click.
+    /// </summary>
+    private void KeepFlyoutNonActivating(Popup flyout)
+    {
+        // The popup's window comes to life during the open pass; style it after that.
+        Dispatcher.BeginInvoke(DispatcherPriority.Loaded, () =>
+        {
+            if (PresentationSource.FromVisual(flyout.Child) is not HwndSource source
+                || source.Handle == 0)
+            {
+                return;
+            }
+            var style = (long)NativeMethods.GetWindowLongPtr(source.Handle, NativeMethods.GwlExStyle);
+            NativeMethods.SetWindowLongPtr(
+                source.Handle,
+                NativeMethods.GwlExStyle,
+                (nint)(style | DockNativeMethods.WsExNoActivate));
+        });
     }
 
     // ---------------------------------------------------------------- 搜索会话
@@ -1739,10 +1801,17 @@ public sealed partial class TopBarWindow : Window
     private void EndSearchSessionAfterInput() =>
         Dispatcher.BeginInvoke(EndSearchSession, DispatcherPriority.Input);
 
-    /// <summary>Opens a result one dispatcher turn later, for the same reason as
-    /// <see cref="EndSearchSessionAfterInput"/>.</summary>
-    private void OpenSearchResultAfterInput(int index) =>
-        Dispatcher.BeginInvoke(() => OpenSearchResult(index), DispatcherPriority.Input);
+    /// <summary>
+    /// Opens one result one dispatcher turn later, for the same reason as
+    /// <see cref="EndSearchSessionAfterInput"/>. The candidate was captured at the
+    /// event, so a session teardown that runs first cannot lose it.
+    /// </summary>
+    private void OpenSearchResultAfterInput(TopBarSearchCandidate candidate) =>
+        Dispatcher.BeginInvoke(() =>
+        {
+            EndSearchSession();
+            _environment.OpenSearchTarget(candidate);
+        }, DispatcherPriority.Input);
 
     /// <summary>Clears the box, closes the flyout and returns the bar to never-activating.</summary>
     internal void EndSearchSession()
@@ -1924,6 +1993,9 @@ public sealed partial class TopBarWindow : Window
     internal Popup? SearchFlyout => _searchFlyout;
 
     internal TextBox? SearchBox => _searchBox;
+
+    /// <summary>The box's host border, for tests reading its on-screen position.</summary>
+    internal Border? SearchHost => _searchHost;
 
     /// <summary>Results of the last rendered search, in display order, for tests.</summary>
     internal IReadOnlyList<TopBarSearchCandidate> SearchResults => _searchResults;

@@ -49,19 +49,22 @@
             VerticalAlignment="Stretch"
             BorderThickness="0,0,0,1"
             CornerRadius="0">
-        <DockPanel>
-            <StackPanel x:Name="RightModules"
-                        DockPanel.Dock="Right"
-                        Orientation="Horizontal"/>
-            <StackPanel x:Name="LeftModules"
-                        DockPanel.Dock="Left"
-                        Orientation="Horizontal"
-                        VerticalAlignment="Center"/>
-            <!--The remaining space between the two module groups; the search box and
-                its flyout live here, centred.-->
+        <Grid>
+            <DockPanel>
+                <StackPanel x:Name="RightModules"
+                            DockPanel.Dock="Right"
+                            Orientation="Horizontal"/>
+                <StackPanel x:Name="LeftModules"
+                            DockPanel.Dock="Left"
+                            Orientation="Horizontal"
+                            VerticalAlignment="Center"/>
+            </DockPanel>
+            <!--The search layer spans the whole bar and centres its content on the bar
+                itself: the box stays at the screen's top centre whatever the side
+                modules measure, at any resolution.-->
             <Grid x:Name="CenterHost"
                   HorizontalAlignment="Center"
                   VerticalAlignment="Center"/>
-        </DockPanel>
+        </Grid>
     </Border>
 </Window>
