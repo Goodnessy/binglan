@@ -52,7 +52,7 @@ internal static class WindowsIndexSearchClient
                 .Replace("[", "[[]").Replace("%", "[%]").Replace("_", "[_]") + "%'");
         var word = Regex.Match(query, @"[\p{L}\p{Nd}]{2,}").Value;
         var prefix = useWordPrefix && word.Length > 0 ? $"CONTAINS(System.FileName, '\"{word}*\"') AND " : "";
-        return $"SELECT TOP {MaximumCandidates} System.ItemPathDisplay, System.FileAttributes FROM SystemIndex WHERE scope='file:' AND " + prefix
+        return $"SELECT TOP {MaximumCandidates} System.ItemUrl, System.FileAttributes FROM SystemIndex WHERE scope='file:' AND " + prefix
             + string.Join(" AND ", conditions);
     }
 
@@ -111,7 +111,11 @@ internal static class WindowsIndexSearchClient
         var candidates = new List<TopBarSearchCandidate>();
         for (var index = 0; index < Math.Min(rows.GetLength(1), MaximumCandidates); index++)
         {
-            if (rows[0, index] is not string path || !Path.IsPathFullyQualified(path)) continue;
+            // Display paths can contain translated folder names that do not exist
+            // on disk. The indexed file URL preserves the actual target for opening.
+            if (rows[0, index] is not string url || !Uri.TryCreate(url, UriKind.Absolute, out var uri) || !uri.IsFile) continue;
+            var path = uri.LocalPath;
+            if (!Path.IsPathFullyQualified(path)) continue;
             var attributes = rows[1, index] is null or DBNull ? 0L : Convert.ToInt64(rows[1, index]);
             candidates.Add(new TopBarSearchCandidate(
                 (attributes & (long)FileAttributes.Directory) != 0 ? TopBarSearchItemKind.Folder : TopBarSearchItemKind.File,

@@ -1288,6 +1288,7 @@ internal static class TopBarWindowTests
     {
         var sql = WindowsIndexSearchClient.CreateQuery("年度 报告'_%[");
         Assert(sql.StartsWith("SELECT TOP 128 ", StringComparison.Ordinal)
+            && sql.Contains("System.ItemUrl, System.FileAttributes", StringComparison.Ordinal)
             && sql.Contains("scope='file:'", StringComparison.Ordinal)
             && sql.Contains("System.FileName LIKE '%年度%' AND System.FileName LIKE '%报告''[_][%][[]%'", StringComparison.Ordinal),
             "系统索引应限制候选数量，并把多词、引号和通配符作为文件名字面量");
@@ -1298,11 +1299,14 @@ internal static class TopBarWindowTests
             "系统索引不应把用户输入解释为内容搜索");
         var parsed = WindowsIndexSearchClient.ParseRows(new object[,]
         {
-            { @"D:\资料\年度报告.txt", @"D:\资料", "relative.txt" },
-            { 0L, 16L, 0L }
+            { "file:///D:/%E8%B5%84%E6%96%99/%E5%B9%B4%E5%BA%A6%E6%8A%A5%E5%91%8A.txt", "file:///D:/%E8%B5%84%E6%96%99", "relative.txt",
+                "file:///C:/Users/test/Desktop/a%20b%23%2520.txt", "https://example.com/file.txt" },
+            { 0L, 16L, 0L, 0L, 0L }
         });
-        Assert(parsed.Count == 2 && parsed[0].FullFileName == "年度报告.txt"
-            && parsed[1].Kind == TopBarSearchItemKind.Folder, "系统索引应保留文件与目录类型，排除非绝对路径");
+        Assert(parsed.Count == 3 && parsed[0].FullFileName == "年度报告.txt"
+            && parsed[1].Kind == TopBarSearchItemKind.Folder, "系统索引应保留文件与目录类型，排除非文件地址");
+        Assert(parsed[2].Path == @"C:\Users\test\Desktop\a b#%20.txt",
+            "索引地址应还原真实 Users/Desktop 路径及空格、井号、百分号，不能使用本地化显示路径");
         using var cancellation = new CancellationTokenSource();
         cancellation.Cancel();
         try
