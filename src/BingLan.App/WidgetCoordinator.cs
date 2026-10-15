@@ -2411,6 +2411,9 @@ public sealed class WidgetCoordinator : IDisposable
             });
         }
 
+        public void OpenSearchTargetLocation(TopBarSearchCandidate candidate) =>
+            _ = Task.Run(() => WindowCommandService.OpenFileLocation(candidate.Path));
+
         public void SearchLayoutChanged() => owner.ScheduleSave();
 
         public void OpenTopBarSettings() => owner.OpenSettings("TopBar");

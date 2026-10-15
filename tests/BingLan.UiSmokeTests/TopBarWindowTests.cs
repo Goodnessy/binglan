@@ -65,6 +65,8 @@ internal static class TopBarWindowTests
     private const uint MouseMove = 0x0001;
     private const uint MouseLeftDown = 0x0002;
     private const uint MouseLeftUp = 0x0004;
+    private const uint MouseRightDown = 0x0008;
+    private const uint MouseRightUp = 0x0010;
     private const uint MouseMoveNoCoalesce = 0x2000;
     private const uint MouseVirtualDesktop = 0x4000;
     private const uint MouseAbsolute = 0x8000;
@@ -184,6 +186,8 @@ internal static class TopBarWindowTests
         RateDigitsDoNotShiftSearchBox(show, pump);
         SearchBoxSitsAtBarCentre(show, pump);
         RealClickOnResultOpensIt(show, pump);
+        SearchResultWindowDoesNotResize(show, pump);
+        SearchResultContextMenuStaysOpen(show, pump);
         SearchPresentationModes(show, pump);
         EverythingProtocolAndFallback(show, pump);
         WindowsIndexQueryRules();
@@ -1086,6 +1090,147 @@ internal static class TopBarWindowTests
         }
     }
 
+    private static void SearchResultWindowDoesNotResize(Action<Window> show, Action pump)
+    {
+        var state = BarState();
+        state.VisibilityMode = TopBarVisibilityMode.SmartHide;
+        using var sampler = new WindowsPerformanceSamplingService();
+        var bar = new TopBarWindow(state, new DesktopStyleState(), new FakeEnvironment(), sampler);
+        show(bar);
+        try
+        {
+            var render = typeof(TopBarWindow).GetMethod("RenderSearchResults",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+            var one = SearchSource().Take(1).ToList();
+            render.Invoke(bar, [one, "one", "test"]);
+            pump();
+            var backing = (FrameworkElement)bar.SearchFlyout!.Child;
+            var card = backing as Border ?? ((Grid)backing).Children.OfType<Border>().Single();
+            var handle = ((HwndSource)PresentationSource.FromVisual(backing)).Handle;
+            GetWindowRect(handle, out var small);
+            var many = Enumerable.Range(0, 24).Select(index => new TopBarSearchCandidate(
+                TopBarSearchItemKind.File, $"测试 {index}", $"test{index}.txt", $"C:\\BingLan-UiTest\\test{index}.txt")).ToList();
+            render.Invoke(bar, [many, "many", "test"]);
+            pump();
+            GetWindowRect(handle, out var large);
+            Assert(large.Bottom - large.Top == small.Bottom - small.Top && card.ActualHeight > 250,
+                "24 条结果使用相同原生窗口大小并提供滚动区域");
+            render.Invoke(bar, [one, "one", "test"]);
+            pump();
+            GetWindowRect(handle, out var restored);
+            Assert(restored.Bottom - restored.Top == small.Bottom - small.Top && card.ActualHeight < 150,
+                "结果减少只缩小可见卡片，不触发原生窗口调整");
+            Assert(card.ActualHeight < backing.ActualHeight && backing.InputHitTest(new Point(10, backing.ActualHeight - 5)) is null,
+                "透明空白区域不能挡住下方窗口");
+            var empty = backing.PointToScreen(new Point(10, backing.ActualHeight - 5));
+            var dpi = VisualTreeHelper.GetDpi(backing);
+            var clicks = 0;
+            var receiverButton = new Button { Content = "点击穿透测试" };
+            receiverButton.Click += (_, _) => clicks++;
+            var receiver = new Window
+            {
+                WindowStyle = WindowStyle.None, ResizeMode = ResizeMode.NoResize,
+                ShowInTaskbar = false, ShowActivated = false, Owner = bar,
+                Width = 100, Height = 40, Left = empty.X / dpi.DpiScaleX - 50,
+                Top = empty.Y / dpi.DpiScaleY - 20, Content = receiverButton
+            };
+            GetCursorPos(out var cursor);
+            try
+            {
+                show(receiver);
+                var receiverHandle = new WindowInteropHelper(receiver).Handle;
+                NativeMethods.SetWindowPos(receiverHandle, handle, 0, 0, 0, 0,
+                    NativeMethods.SwpNoMove | NativeMethods.SwpNoSize | NativeMethods.SwpNoActivate);
+                pump();
+                SetCursorPos((int)empty.X, (int)empty.Y);
+                pump();
+                GetCursorPos(out var actual);
+                var hit = WindowFromPoint(actual);
+                Assert(hit == handle || hit == receiverHandle, "穿透测试仅点击两个测试窗口的交叠区域");
+                SendMouseInputs(new MouseInput { Flags = MouseLeftDown }, new MouseInput { Flags = MouseLeftUp });
+                Assert(WaitUntil(pump, () => clicks == 1), "透明缓冲区域的真实点击应交给下方按钮");
+            }
+            finally { SetCursorPos(cursor.X, cursor.Y); receiver.Close(); pump(); }
+        }
+        finally { bar.Close(); pump(); }
+    }
+
+    private static void SearchResultContextMenuStaysOpen(Action<Window> show, Action pump)
+    {
+        foreach (var mode in Enum.GetValues<SearchPresentation>())
+        {
+            var state = BarState();
+            state.VisibilityMode = TopBarVisibilityMode.SmartHide;
+            state.SearchPresentation = mode;
+            using var sampler = new WindowsPerformanceSamplingService();
+            var environment = new FakeEnvironment { SearchCandidates = SearchSource() };
+            var bar = new TopBarWindow(state, new DesktopStyleState(), environment, sampler);
+            show(bar);
+            GetCursorPos(out var cursor);
+            try
+            {
+                bar.BeginSearchSession();
+                var input = bar.FloatingSearchWindow as Window ?? bar;
+                ForceForeground(new WindowInteropHelper(input).Handle);
+                bar.SearchBox!.Focus();
+                Assert(WaitUntil(pump, () => bar.SearchBox.IsKeyboardFocused && environment.CandidateReads > 0), "右键测试先取得搜索焦点");
+                bar.SearchBox.Text = "wx";
+                bar.PumpSearch();
+                Assert(WaitUntil(pump, () => bar.SearchResults.Count > 0 && LogicalDescendants(bar.SearchFlyout?.Child)
+                    .OfType<Border>().Any(row => row.Tag is int && row.ActualWidth > 20)), "右键测试先等待结果布局");
+                Assert(WaitUntil(pump, () => !LogicalDescendants(bar.SearchFlyout?.Child).OfType<TextBlock>()
+                    .Any(text => text.Text == "正在查询文件索引…")), "等待当前索引回复后再定位右键行");
+                var row = LogicalDescendants(bar.SearchFlyout!.Child).OfType<Border>().First(item => item.Tag is int);
+                var point = row.PointToScreen(new Point(row.ActualWidth / 2, row.ActualHeight / 2));
+                var popup = (HwndSource)PresentationSource.FromVisual(bar.SearchFlyout.Child);
+                SetCursorPos((int)point.X, (int)point.Y);
+                Assert(WaitUntil(pump, () => WindowFromPoint(new NativePoint { X = (int)point.X, Y = (int)point.Y }) == popup.Handle), "右键前等待原生命中结果窗口");
+                MoveMouseTo((int)point.X - 12, (int)point.Y);
+                Assert(WaitUntil(pump, () => row.IsMouseOver), "右键前鼠标进入结果行");
+                MoveMouseTo((int)point.X, (int)point.Y);
+                pump();
+                GetCursorPos(out var actual);
+                Assert(WindowFromPoint(actual) == popup.Handle, "右键只发给结果窗口");
+                SendMouseInputs(new MouseInput { Flags = MouseRightDown });
+                try
+                {
+                    var releaseAt = Environment.TickCount64 + 150;
+                    while (Environment.TickCount64 < releaseAt) { pump(); Thread.Sleep(10); }
+                    Assert(bar.SearchSessionActive && bar.SearchFlyout.IsOpen, "右键按住期间结果保持打开");
+                }
+                finally { SendMouseInputs(new MouseInput { Flags = MouseRightUp }); }
+                Assert(WaitUntil(pump, () => row.ContextMenu?.IsOpen == true), $"{mode} 结果右键应打开菜单");
+                var menu = row.ContextMenu!;
+                var until = Environment.TickCount64 + 300;
+                while (Environment.TickCount64 < until) { pump(); Thread.Sleep(10); }
+                Assert(menu.IsOpen && bar.SearchSessionActive && bar.SearchFlyout?.IsOpen == true, "菜单取得焦点后搜索和结果不能消失");
+                // A late index reply must keep the menu's placement row alive.
+                bar.PumpSearch();
+                until = Environment.TickCount64 + 300;
+                while (Environment.TickCount64 < until) { pump(); Thread.Sleep(10); }
+                Assert(menu.IsOpen && LogicalDescendants(bar.SearchFlyout?.Child).Contains(row), "索引更新期间保留右键结果");
+                menu.IsOpen = false;
+                Assert(WaitUntil(pump, () => bar.SearchBox.IsKeyboardFocused), "关闭菜单后恢复输入焦点");
+                Assert(bar.SearchSessionActive && bar.SearchBox.Text == "wx", "关闭菜单保留查询");
+                row = LogicalDescendants(bar.SearchFlyout!.Child).OfType<Border>().First(item => item.Tag is int);
+                PressKey(bar.SearchBox, Key.Apps);
+                Assert(WaitUntil(pump, () => row.ContextMenu?.IsOpen == true), "键盘菜单键也能操作选中结果");
+                menu = row.ContextMenu!;
+                var location = menu.Items.OfType<MenuItem>().Single(item => Equals(item.Header, "打开文件位置"));
+                location.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+                Assert(WaitUntil(pump, () => environment.OpenedLocations.Count == 1), "文件位置操作应被执行");
+                Assert(environment.OpenedLocations[0] == @"C:\Users\a\Desktop\微信.lnk" && environment.OpenedTargets.Count == 0
+                    && !bar.SearchSessionActive && !menu.IsOpen, "位置操作使用右键候选且只执行一次");
+            }
+            finally
+            {
+                SetCursorPos(cursor.X, cursor.Y);
+                bar.Close();
+                pump();
+            }
+        }
+    }
+
     private static void SearchPresentationModes(Action<Window> show, Action pump)
     {
         GetCursorPos(out var originalCursor);
@@ -1187,7 +1332,19 @@ internal static class TopBarWindowTests
                     pump();
                     Assert(bar.FloatingSearchWindow is null && !floating.IsVisible && Window.GetWindow(bar.SearchHost) == bar
                         && ReferenceEquals(sharedBox, bar.SearchBox),
-                        "切回顶栏应关闭独立宿主并恢复居中输入框");
+                        "切回顶栏应隐藏独立宿主并恢复居中输入框");
+                    var floatingHandle = new WindowInteropHelper(floating).Handle;
+                    state.SearchPresentation = SearchPresentation.Floating;
+                    bar.ApplyState();
+                    pump();
+                    Assert(ReferenceEquals(floating, bar.FloatingSearchWindow)
+                        && new WindowInteropHelper(bar.FloatingSearchWindow!).Handle == floatingHandle
+                        && ReferenceEquals(sharedBox, bar.SearchBox), "从顶栏再次切出也复用同一个宿主和输入框");
+                    state.Modules.Search = false;
+                    bar.ApplyState();
+                    pump();
+                    Assert(HwndSource.FromHwnd(floatingHandle) is null && bar.FloatingSearchWindow is null,
+                        "关闭搜索模块时释放独立窗口");
                 }
                 finally
                 {
@@ -1396,6 +1553,7 @@ internal static class TopBarWindowTests
         internal int TopBarPageRequested { get; private set; }
         internal IReadOnlyList<TopBarSearchCandidate> SearchCandidates { get; set; } = [];
         internal List<string> OpenedTargets { get; } = [];
+        internal List<string> OpenedLocations { get; } = [];
         internal int CandidateReads { get; private set; }
         internal int LayoutSaves { get; private set; }
         public void SearchLayoutChanged() => LayoutSaves++;
@@ -1421,6 +1579,8 @@ internal static class TopBarWindowTests
         }
 
         public void OpenSearchTarget(TopBarSearchCandidate candidate) => OpenedTargets.Add(candidate.Path);
+
+        public void OpenSearchTargetLocation(TopBarSearchCandidate candidate) => OpenedLocations.Add(candidate.Path);
 
         public void OpenTopBarSettings() => TopBarPageRequested++;
 

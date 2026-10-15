@@ -29,9 +29,7 @@ public partial class SearchWindow : Window
         Width = state.SearchWindowWidth;
         Left = state.SearchWindowPlacement.Left;
         Top = state.SearchWindowPlacement.Top;
-        search.Width = double.NaN;
-        search.Height = 30;
-        SearchContent.Content = search;
+        AttachSearchContent(search);
         SourceInitialized += (_, _) =>
         {
             var handle = new WindowInteropHelper(this).Handle;
@@ -67,6 +65,13 @@ public partial class SearchWindow : Window
     internal event Action? Dismissed;
 
     internal void DetachSearchContent() => SearchContent.Content = null;
+
+    internal void AttachSearchContent(Border search)
+    {
+        search.Width = double.NaN;
+        search.Height = 30;
+        SearchContent.Content = search;
+    }
 
     internal void ApplyAppearance(DockGlass glass)
     {

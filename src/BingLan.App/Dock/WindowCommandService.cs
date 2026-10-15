@@ -77,9 +77,9 @@ internal static class WindowCommandService
 
     internal static WindowCommandResult OpenFileLocation(string executablePath)
     {
-        if (!File.Exists(executablePath))
+        if (!File.Exists(executablePath) && !Directory.Exists(executablePath))
         {
-            return new WindowCommandResult(false, "程序文件已不存在");
+            return new WindowCommandResult(false, "文件或文件夹已不存在");
         }
 
         try
