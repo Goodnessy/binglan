@@ -1325,6 +1325,21 @@
                         </local:SettingsGroup>
 
                         <local:SettingsGroup>
+                            <local:SettingsRow Glyph="&#xE721;" GlyphBrush="{DynamicResource SettingsIconTealBrush}" Header="文件搜索来源"
+                                               Description="默认使用 Windows 已有文件索引；可选使用已安装并运行的完整版 Everything。不可用时自动回退，不修改索引范围，不搜索文件正文。">
+                                <CheckBox x:Name="TopBarEverythingCheckBox" Content="使用 Everything"
+                                          AutomationProperties.Name="使用 Everything 搜索文件"
+                                          Checked="TopBarSetting_Changed" Unchecked="TopBarSetting_Changed"/>
+                            </local:SettingsRow>
+                            <local:SettingsRow Glyph="&#xE721;" GlyphBrush="{DynamicResource SettingsIconTealBrush}" Header="搜索入口"
+                                               Description="独立搜索框可从左侧手柄拖动、右侧手柄调宽；图标模式点击后展开搜索框。">
+                                <ComboBox x:Name="SearchPresentationComboBox" MinWidth="160"
+                                          AutomationProperties.Name="搜索入口显示方式" SelectionChanged="SearchPresentation_Changed">
+                                    <ComboBoxItem Content="顶栏居中"/>
+                                    <ComboBoxItem Content="独立搜索框"/>
+                                    <ComboBoxItem Content="顶栏图标"/>
+                                </ComboBox>
+                            </local:SettingsRow>
                             <local:SettingsRow Glyph="&#xE721;" GlyphBrush="{DynamicResource SettingsIconTealBrush}" Header="搜索热键"
                                                Description="聚焦/收起顶栏搜索的全局组合键，需至少一个修饰键（Ctrl/Alt/Shift/Win）；关闭搜索模块后热键同时注销">
                                 <StackPanel Orientation="Horizontal">

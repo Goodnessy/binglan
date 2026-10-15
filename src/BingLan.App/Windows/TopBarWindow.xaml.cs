@@ -75,6 +75,8 @@ internal interface ITopBarEnvironment
     /// <summary>Opens one search result with its default handler; failures stay quiet.</summary>
     void OpenSearchTarget(TopBarSearchCandidate candidate);
 
+    void SearchLayoutChanged();
+
     void ExitApp();
 }
 
@@ -152,6 +154,13 @@ public sealed partial class TopBarWindow : Window
     private readonly List<Border> _searchRowBorders = [];
     private int _searchSelected;
     private int _searchGeneration;
+    private CancellationTokenSource? _searchCancellation;
+    private EverythingSearchClient? _everythingSearch;
+    private SearchWindow? _searchWindow;
+    private bool _searchWindowHiddenForFullScreen;
+
+    private Window SearchInputWindow => _searchWindow is { } window ? window : this;
+    private nint SearchInputHandle => new WindowInteropHelper(SearchInputWindow).Handle;
 
     /// <summary>Whether a search session holds the bar activatable and the keyboard.</summary>
     private bool _searchActive;
@@ -324,6 +333,10 @@ public sealed partial class TopBarWindow : Window
     {
         _closing = true;
         EndSearchSession();
+        _everythingSearch?.Dispose();
+        _searchCancellation?.Dispose();
+        _searchWindow?.Shutdown();
+        _searchWindow = null;
         UnregisterSearchHotkey();
         CloseTodoFlyout();
         CloseClockFlyout();
@@ -453,7 +466,10 @@ public sealed partial class TopBarWindow : Window
         CenterHost.Children.Clear();
         _modules.Clear();
         EndSearchSession();
+        _searchWindow?.Shutdown();
+        _searchWindow = null;
         _searchHost = null;
+        _searchWindowHiddenForFullScreen = false;
         _searchBox = null;
         _searchPlaceholder = null;
         _searchFlyout = null;
@@ -1298,7 +1314,7 @@ public sealed partial class TopBarWindow : Window
 
         var placeholder = new TextBlock
         {
-            Text = "搜索桌面与应用",
+            Text = "搜索文件与应用",
             Foreground = new SolidColorBrush(Color.FromArgb(150, 255, 255, 255)),
             FontSize = 12,
             IsHitTestVisible = false,
@@ -1349,7 +1365,39 @@ public sealed partial class TopBarWindow : Window
         _searchHost = host;
         _searchBox = box;
         _searchPlaceholder = placeholder;
-        CenterHost.Children.Add(host);
+        if (_state.SearchPresentation == SearchPresentation.TopBar)
+        {
+            CenterHost.Children.Add(host);
+        }
+        else
+        {
+            var window = new SearchWindow(_state, host, _environment.SearchLayoutChanged);
+            _searchWindow = window;
+            window.Deactivated += (_, _) =>
+            {
+                if (ReferenceEquals(_searchWindow, window) && _searchActive)
+                {
+                    EndSearchSessionAfterInput();
+                }
+            };
+            window.Dismissed += EndSearchSession;
+            if (_state.SearchPresentation == SearchPresentation.Floating)
+            {
+                window.Show();
+            }
+            else
+            {
+                var button = new Button
+                {
+                    Content = new TextBlock { Text = GlyphSearch, FontFamily = StatusIconFont },
+                    Style = (Style)FindResource("ModuleButton"),
+                    Foreground = Brushes.White, ToolTip = "搜索文件与应用", MinWidth = 32, MinHeight = 24
+                };
+                AutomationProperties.SetName(button, "展开搜索");
+                button.Click += (_, _) => Dispatcher.BeginInvoke(BeginSearchSession, DispatcherPriority.Input);
+                CenterHost.Children.Add(button);
+            }
+        }
         _modules[TopBarModuleKind.Search] = host;
         UpdateSearchHostWidth();
         UpdateSearchPlaceholder();
@@ -1362,7 +1410,7 @@ public sealed partial class TopBarWindow : Window
     /// </summary>
     private void UpdateSearchHostWidth()
     {
-        if (_searchHost is not { } host)
+        if (_state.SearchPresentation != SearchPresentation.TopBar || _searchHost is not { } host)
         {
             return;
         }
@@ -1395,7 +1443,7 @@ public sealed partial class TopBarWindow : Window
         RunSearchNow();
     }
 
-    private void RunSearchNow()
+    private async void RunSearchNow()
     {
         if (_closing || _searchBox is not { } box)
         {
@@ -1413,18 +1461,45 @@ public sealed partial class TopBarWindow : Window
 
         var candidates = _searchCandidates;
         var generation = ++_searchGeneration;
-        Task.Run(() => TopBarSearchRules.Search(candidates, query))
-            .ContinueWith(task => Dispatcher.BeginInvoke(() =>
+        _searchCancellation?.Cancel();
+        _searchCancellation?.Dispose();
+        _searchCancellation = new CancellationTokenSource();
+        var token = _searchCancellation.Token;
+        var useEverything = _state.UseEverything;
+        try
+        {
+            var basicResults = await Task.Run(() => TopBarSearchRules.Search(candidates, query), token);
+            if (_closing || token.IsCancellationRequested || generation != _searchGeneration || _searchBox?.Text != query) return;
+            RenderSearchResults([.. basicResults], query, "正在查询文件索引…");
+            var files = EverythingSearchResult.Unavailable;
+            if (useEverything && HwndSource.FromHwnd(_handle) is { } source)
             {
-                if (_closing || generation != _searchGeneration || _searchBox?.Text != query)
-                {
-                    return;
-                }
-                RenderSearchResults([.. task.Result], query);
-            }));
+                _everythingSearch ??= new EverythingSearchClient(source);
+                files = await _everythingSearch.SearchAsync(query, token);
+            }
+            var windows = files.Available ? WindowsIndexSearchResult.Unavailable
+                : await WindowsIndexSearchClient.SearchAsync(query, token);
+            // Only bounded replies join the basic candidates; desktop paths win duplicates.
+            var results = await Task.Run(() => TopBarSearchRules.Search(
+                candidates.Concat(files.Candidates).Concat(windows.Candidates)
+                    .DistinctBy(candidate => candidate.Path, StringComparer.OrdinalIgnoreCase), query), token);
+            // Keep the pressed result alive through MouseUp; opening it cancels this query.
+            while (Mouse.LeftButton == MouseButtonState.Pressed) await Task.Delay(30, token);
+            if (_closing || token.IsCancellationRequested || generation != _searchGeneration || _searchBox?.Text != query)
+            {
+                return;
+            }
+            RenderSearchResults([.. results], query, files.Available ? "桌面与应用 · Everything 文件搜索"
+                : windows.Available ? useEverything ? "Everything 不可用，已使用 Windows 索引" : "桌面与应用 · Windows 已索引文件"
+                : "文件索引不可用，已搜索桌面与应用");
+        }
+        catch (OperationCanceledException)
+        {
+            // A newer edit or a closed session owns the surface now.
+        }
     }
 
-    private void RenderSearchResults(List<TopBarSearchCandidate> results, string query)
+    private void RenderSearchResults(List<TopBarSearchCandidate> results, string query, string? scope = null)
     {
         if (_searchHost is null)
         {
@@ -1465,6 +1540,14 @@ public sealed partial class TopBarWindow : Window
             }
             UpdateSearchSelection();
             LoadSearchIcons(results);
+        }
+        if (scope is not null)
+        {
+            rows.Children.Add(new TextBlock
+            {
+                Text = scope, Foreground = Brushes.White, Opacity = 0.6, FontSize = 11,
+                Margin = new Thickness(12, 6, 12, 2), IsHitTestVisible = false
+            });
         }
     }
 
@@ -1661,10 +1744,11 @@ public sealed partial class TopBarWindow : Window
         }
 
         var rows = new StackPanel();
+        var flyoutWidth = _searchWindow?.ActualWidth > 0 ? _searchWindow.ActualWidth : SearchFlyoutWidth;
         var glass = DesktopStyleRules.TopBar(_style, _state);
         var card = new Border
         {
-            Width = SearchFlyoutWidth,
+            Width = flyoutWidth,
             Background = FrozenBrush(glass.Surface),
             BorderBrush = FrozenBrush(glass.Border),
             BorderThickness = new Thickness(1),
@@ -1686,7 +1770,7 @@ public sealed partial class TopBarWindow : Window
             PlacementTarget = host,
             Placement = PlacementMode.Bottom,
             // Centred on the box whatever width it clamped to, not on the design width.
-            HorizontalOffset = -(SearchFlyoutWidth - host.ActualWidth) / 2d,
+            HorizontalOffset = -(flyoutWidth - host.ActualWidth) / 2d,
             VerticalOffset = 2,
             StaysOpen = true,
             AllowsTransparency = true,
@@ -1708,8 +1792,15 @@ public sealed partial class TopBarWindow : Window
 
     private void CloseSearchFlyout()
     {
+        _searchCancellation?.Cancel();
+        _searchGeneration++;
         _searchDebounce.Stop();
-        _searchFlyout?.SetCurrentValue(Popup.IsOpenProperty, false);
+        var flyout = _searchFlyout;
+        flyout?.SetCurrentValue(Popup.IsOpenProperty, false);
+        if (flyout is not null)
+        {
+            CenterHost.Children.Remove(flyout);
+        }
         _searchFlyout = null;
         _searchResults = [];
         _searchRowBorders.Clear();
@@ -1771,11 +1862,16 @@ public sealed partial class TopBarWindow : Window
         _searchActive = true;
         _searchSessionOwner = this;
         _searchPreviousForeground = DockNativeMethods.GetForegroundWindow();
+        if (_searchWindow is { } searchWindow)
+        {
+            searchWindow.Show();
+            searchWindow.RecoverPlacement();
+        }
         SetSearchActivatable(true);
         try
         {
-            DockNativeMethods.SetForegroundWindow(_handle);
-            Activate();
+            DockNativeMethods.SetForegroundWindow(SearchInputHandle);
+            SearchInputWindow.Activate();
         }
         catch (Exception exception) when (exception is InvalidOperationException)
         {
@@ -1843,11 +1939,15 @@ public sealed partial class TopBarWindow : Window
         if (!_closing)
         {
             var previous = _searchPreviousForeground;
-            if (previous != 0 && previous != _handle
-                && DockNativeMethods.GetForegroundWindow() == _handle)
+            if (previous != 0 && previous != SearchInputHandle
+                && DockNativeMethods.GetForegroundWindow() == SearchInputHandle)
             {
                 _ = DockNativeMethods.SetForegroundWindow(previous);
             }
+        }
+        if (_state.SearchPresentation == SearchPresentation.Icon)
+        {
+            _searchWindow?.Hide();
         }
     }
 
@@ -1855,7 +1955,7 @@ public sealed partial class TopBarWindow : Window
     protected override void OnDeactivated(EventArgs args)
     {
         base.OnDeactivated(args);
-        if (_searchActive)
+        if (_searchActive && _searchWindow is null)
         {
             EndSearchSessionAfterInput();
         }
@@ -1863,17 +1963,18 @@ public sealed partial class TopBarWindow : Window
 
     private void SetSearchActivatable(bool activatable)
     {
-        if (_handle == 0)
+        var inputHandle = SearchInputHandle;
+        if (inputHandle == 0)
         {
             return;
         }
-        var style = (long)NativeMethods.GetWindowLongPtr(_handle, NativeMethods.GwlExStyle);
+        var style = (long)NativeMethods.GetWindowLongPtr(inputHandle, NativeMethods.GwlExStyle);
         var wanted = activatable
             ? style & ~DockNativeMethods.WsExNoActivate
             : style | DockNativeMethods.WsExNoActivate;
         if (wanted != style)
         {
-            NativeMethods.SetWindowLongPtr(_handle, NativeMethods.GwlExStyle, (nint)wanted);
+            NativeMethods.SetWindowLongPtr(inputHandle, NativeMethods.GwlExStyle, (nint)wanted);
         }
     }
 
@@ -2003,6 +2104,7 @@ public sealed partial class TopBarWindow : Window
     internal IReadOnlyList<TopBarSearchCandidate> SearchResults => _searchResults;
 
     internal bool SearchSessionActive => _searchActive;
+    internal SearchWindow? FloatingSearchWindow => _searchWindow;
 
     /// <summary>
     /// While a search session holds the foreground, the bar holding it and the window
@@ -2347,6 +2449,19 @@ public sealed partial class TopBarWindow : Window
             && foregroundBounds.Bottom >= monitor.Bounds.Bottom;
         var zoomed = foreground && foregroundWindow != 0 && DockNativeMethods.IsZoomed(foregroundWindow);
         var trueFullScreen = DockVacateRules.IsTrueFullScreen(fullScreen, zoomed);
+        if (_searchWindow is { } floating && _state.SearchPresentation == SearchPresentation.Floating)
+        {
+            if (trueFullScreen && !_searchActive && floating.IsVisible)
+            {
+                floating.Hide();
+                _searchWindowHiddenForFullScreen = true;
+            }
+            else if (!trueFullScreen && _searchWindowHiddenForFullScreen)
+            {
+                floating.Show();
+                _searchWindowHiddenForFullScreen = false;
+            }
+        }
 
         if (_appBar.IsReserved)
         {

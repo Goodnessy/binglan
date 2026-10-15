@@ -8,6 +8,13 @@ public enum TopBarVisibilityMode
     SmartHide
 }
 
+public enum SearchPresentation
+{
+    TopBar,
+    Floating,
+    Icon
+}
+
 /// <summary>The top bar's read-only modules, in display order. The search box sits in
 /// the bar's centre regardless of this order; its kind is here so it shares the module
 /// switch machinery with the rest.</summary>
@@ -83,6 +90,15 @@ public sealed class TopBarState
     /// <summary>The global focus-search hotkey text ("Win+Shift+F"); machine-local and
     /// never exported with a theme. Invalid or missing text falls back to the default.</summary>
     public string SearchHotkey { get; set; } = DefaultSearchHotkey;
+
+    /// <summary>Optional local Everything query source; no index is maintained here.</summary>
+    public bool UseEverything { get; set; }
+
+    public SearchPresentation SearchPresentation { get; set; }
+
+    public double SearchWindowWidth { get; set; } = 420d;
+
+    public WindowPlacement SearchWindowPlacement { get; set; } = new();
 }
 
 public static class TopBarRules
@@ -126,6 +142,22 @@ public static class TopBarRules
     {
         ArgumentNullException.ThrowIfNull(state);
         state.Modules ??= new TopBarModuleSwitches();
+        state.SearchWindowPlacement ??= new WindowPlacement();
+        if (!double.IsFinite(state.SearchWindowPlacement.Left))
+        {
+            state.SearchWindowPlacement.Left = 92;
+        }
+        if (!double.IsFinite(state.SearchWindowPlacement.Top))
+        {
+            state.SearchWindowPlacement.Top = 92;
+        }
+        if (!Enum.IsDefined(state.SearchPresentation))
+        {
+            state.SearchPresentation = SearchPresentation.TopBar;
+        }
+        state.SearchWindowWidth = double.IsFinite(state.SearchWindowWidth)
+            ? Math.Clamp(state.SearchWindowWidth, 240d, 800d)
+            : 420d;
         if (double.IsNaN(state.Height) || double.IsInfinity(state.Height))
         {
             state.Height = TopBarState.DefaultHeightDip;

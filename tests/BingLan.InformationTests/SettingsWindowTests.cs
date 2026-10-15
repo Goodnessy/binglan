@@ -243,6 +243,14 @@ internal static class SettingsWindowTests
             Require<RadioButton>(window, "TopBarCustomLookRadio").IsChecked = true;
             Pump();
             Assert(!topBar.FollowCardLook, "自定义外观应写入状态");
+            var everything = Require<CheckBox>(window, "TopBarEverythingCheckBox");
+            Assert(everything.IsChecked == false, "Everything 搜索默认关闭");
+            everything.IsChecked = true;
+            Pump();
+            Assert(topBar.UseEverything, "Everything 选项应写入本机设置");
+            Require<ComboBox>(window, "SearchPresentationComboBox").SelectedIndex = 1;
+            Pump();
+            Assert(topBar.SearchPresentation == SearchPresentation.Floating, "独立搜索入口应写入状态");
         }
         finally
         {

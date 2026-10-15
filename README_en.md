@@ -25,6 +25,7 @@ BingLan Desktop (冰蓝桌面) is a Windows 11 desktop companion built with .NET
 - **Quick launch**: a row of line icons for This PC, Desktop, Documents, Downloads, Pictures, and the Recycle Bin by default. Icons, names, and targets are customizable; a target can be a folder, program, or file.
 - **Dock**: pinned and running apps in separate sections, with a badge on apps that need attention. Drag a program or shortcut onto the dock to pin it; colour, opacity, and icon size are adjustable. Floating bars and small tools you don't want on the dock can be hidden from its right-click menu.
 - **Taskbar**: default, transparent, blurred, or auto-hide; an auto-hidden taskbar can be revealed only at the bottom-left and bottom-right corners. The original state comes back on exit or after a crash.
+- **Search**: a centered top-bar field, a movable and resizable separate field, or a top-bar icon. Searches desktop entries, Start-menu apps, and files already indexed by Windows by default. Optional Everything integration falls back to Windows Search when unavailable. If neither index is available, desktop and app search remains usable. BingLan does not change indexing scope, maintain an additional index, or search file contents.
 - **Resource use**: measured on one 1440p Windows 11 PC, BingLan uses about 56–58 MB of memory; Rainmeter, Pogget, Nexus Dock, and TranslucentTB, the tools it replaces, used about 77.5 MB together (Task Manager "Memory" column, single measurement; varies with the machine and number of cards).
 - **Look**: light glass, dark glass, or no backing; custom text and accent colours; bundled open-licence fonts. Fonts and colours can be imported, read-only, from a Rainmeter skin. Themes can be exported and shared without names, cities, to-dos, or file paths.
 - **Settings**: five pages (Appearance, Desktop components, Dock, Taskbar, General), with each setting in exactly one place. On Windows 11 the window uses the Mica material, falling back to a solid colour when transparency effects are off or high contrast is on.
@@ -58,7 +59,7 @@ Requires the .NET 10 SDK and PowerShell 7. Building the installer also needs Inn
 ```powershell
 dotnet build .\BingLan.slnx -c Release
 dotnet run --project .\tests\BingLan.SmokeTests\BingLan.SmokeTests.csproj -c Release
-pwsh -NoProfile -File .\installer\build.ps1 -Version 0.2.18
+pwsh -NoProfile -File .\installer\build.ps1 -Version 0.2.19
 ```
 
 Full test commands, the technical design, and the current implementation are in the [development notes (Chinese)](docs/DEVELOPMENT.md); installer details are in [docs/INSTALLER.md](docs/INSTALLER.md).

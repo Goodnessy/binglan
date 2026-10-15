@@ -1,0 +1,135 @@
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Interop;
+using BingLan.App.Interop;
+using BingLan.App.Services;
+using BingLan.Core.Models;
+
+namespace BingLan.App.Windows;
+
+/// <summary>A movable host for the same search controls and session as the top bar.</summary>
+public partial class SearchWindow : Window
+{
+    private readonly TopBarState _state;
+    private readonly Action _save;
+    private int _pressX;
+    private int _pressY;
+    private int _startLeft;
+    private int _startTop;
+    private double _startWidth;
+    private bool _allowClose;
+    private bool _layoutChanging;
+
+    internal SearchWindow(TopBarState state, Border search, Action save)
+    {
+        _state = state;
+        _save = save;
+        InitializeComponent();
+        Width = state.SearchWindowWidth;
+        Left = state.SearchWindowPlacement.Left;
+        Top = state.SearchWindowPlacement.Top;
+        search.Width = double.NaN;
+        search.Height = 30;
+        SearchContent.Content = search;
+        SourceInitialized += (_, _) =>
+        {
+            var handle = new WindowInteropHelper(this).Handle;
+            var style = (long)NativeMethods.GetWindowLongPtr(handle, NativeMethods.GwlExStyle);
+            NativeMethods.SetWindowLongPtr(handle, NativeMethods.GwlExStyle,
+                (nint)(style | NativeMethods.WsExToolWindow | DockNativeMethods.WsExNoActivate));
+        };
+        Loaded += (_, _) => RecoverPlacement();
+        DpiChanged += (_, _) => Dispatcher.BeginInvoke(RecoverPlacement);
+        MoveHandle.DragStarted += BeginLayoutChange;
+        WidthHandle.DragStarted += BeginLayoutChange;
+        MoveHandle.DragDelta += (_, _) => MoveFromPointer();
+        WidthHandle.DragDelta += (_, _) => ResizeFromPointer();
+        MoveHandle.DragCompleted += EndLayoutChange;
+        WidthHandle.DragCompleted += EndLayoutChange;
+        Closing += (_, args) =>
+        {
+            if (!_allowClose)
+            {
+                args.Cancel = true;
+                // Leave the close/input message before changing foreground or hiding
+                // the focused text store, as with the shared search session teardown.
+                Dispatcher.BeginInvoke(() =>
+                {
+                    if (_allowClose) return;
+                    Dismissed?.Invoke();
+                    Hide();
+                }, System.Windows.Threading.DispatcherPriority.Input);
+            }
+        };
+    }
+
+    internal event Action? Dismissed;
+
+    internal void RecoverPlacement()
+    {
+        WindowScreenRecovery.RestoreLayout(this, _state.SearchWindowPlacement);
+        WindowScreenRecovery.EnsureOnScreen(this);
+        WindowScreenRecovery.KeepOutOfReservedEdges(this);
+    }
+
+    internal void Shutdown()
+    {
+        _allowClose = true;
+        Close();
+    }
+
+    private void BeginLayoutChange(object sender, DragStartedEventArgs args)
+    {
+        _layoutChanging = false;
+        if (!DockNativeMethods.GetCursorPos(out var cursor)
+            || !DockNativeMethods.GetWindowRect(new WindowInteropHelper(this).Handle, out var bounds))
+        {
+            return;
+        }
+        _pressX = cursor.X;
+        _pressY = cursor.Y;
+        _startLeft = bounds.Left;
+        _startTop = bounds.Top;
+        _startWidth = Width;
+        _layoutChanging = true;
+    }
+
+    private void MoveFromPointer()
+    {
+        if (_layoutChanging && DockNativeMethods.GetCursorPos(out var cursor))
+        {
+            NativeMethods.SetWindowPos(new WindowInteropHelper(this).Handle, 0,
+                _startLeft + cursor.X - _pressX, _startTop + cursor.Y - _pressY, 0, 0,
+                NativeMethods.SwpNoSize | NativeMethods.SwpNoZOrder | NativeMethods.SwpNoActivate);
+        }
+    }
+
+    private void ResizeFromPointer()
+    {
+        if (_layoutChanging && DockNativeMethods.GetCursorPos(out var cursor))
+        {
+            var scale = System.Windows.Media.VisualTreeHelper.GetDpi(this).DpiScaleX;
+            Width = Math.Clamp(_startWidth + (cursor.X - _pressX) / scale, MinWidth, MaxWidth);
+        }
+    }
+
+    private void EndLayoutChange(object sender, DragCompletedEventArgs args)
+    {
+        if (!_layoutChanging)
+        {
+            return;
+        }
+        _layoutChanging = false;
+        WindowScreenRecovery.EnsureOnScreen(this);
+        WindowScreenRecovery.KeepOutOfReservedEdges(this);
+        _state.SearchWindowWidth = Width;
+        var placement = _state.SearchWindowPlacement;
+        placement.Left = Left;
+        placement.Top = Top;
+        placement.Width = Width;
+        placement.Height = Height;
+        WindowScreenRecovery.RememberLayout(this, placement);
+        _save();
+    }
+}

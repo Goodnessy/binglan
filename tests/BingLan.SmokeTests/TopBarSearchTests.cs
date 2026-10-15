@@ -174,10 +174,17 @@ public static class TopBarSearchTests
             var state = store.Load();
             state.TopBar.IsEnabled = true;
             state.TopBar.SearchHotkey = "Alt+Q";
+            state.TopBar.UseEverything = true;
+            state.TopBar.SearchPresentation = SearchPresentation.Floating;
+            state.TopBar.SearchWindowWidth = 560;
+            state.TopBar.SearchWindowPlacement.Left = 180;
             store.Save(state);
 
             var reloaded = store.Load();
             Assert(reloaded.TopBar.SearchHotkey == "Alt+Q", "热键持久化往返一致");
+            Assert(reloaded.TopBar.UseEverything && reloaded.TopBar.SearchPresentation == SearchPresentation.Floating
+                && reloaded.TopBar.SearchWindowWidth == 560 && reloaded.TopBar.SearchWindowPlacement.Left == 180,
+                "搜索来源、入口和布局应持久保存");
             Assert(TopBarRules.IsModuleOn(reloaded.TopBar.Modules, TopBarModuleKind.Search),
                 "搜索模块默认开启");
             reloaded.TopBar.SearchHotkey = "乱写";
@@ -202,6 +209,25 @@ public static class TopBarSearchTests
             Assert(!migrated.TopBar.Modules.Clock, "迁移保留原有模块开关");
             Assert(migrated.TopBar.SearchHotkey == TopBarState.DefaultSearchHotkey,
                 "迁移后热键取默认值");
+            Assert(!migrated.TopBar.UseEverything && migrated.TopBar.SearchPresentation == SearchPresentation.TopBar,
+                "旧配置应保留顶栏居中并默认关闭 Everything");
+            migrated.TopBar.SearchWindowWidth = double.PositiveInfinity;
+            migrated.TopBar.SearchPresentation = (SearchPresentation)99;
+            TopBarRules.Normalize(migrated.TopBar);
+            Assert(migrated.TopBar.SearchWindowWidth == 420 && migrated.TopBar.SearchPresentation == SearchPresentation.TopBar,
+                "损坏的搜索宽度与显示方式应恢复默认");
+            var v29 = JsonSerializer.SerializeToNode(state)!;
+            v29["SchemaVersion"] = 29;
+            var oldTopBar = v29["TopBar"]!.AsObject();
+            foreach (var field in new[] { "UseEverything", "SearchPresentation", "SearchWindowWidth", "SearchWindowPlacement" })
+            {
+                oldTopBar.Remove(field);
+            }
+            File.WriteAllText(Path.Combine(directory, "widgets.json"), v29.ToJsonString());
+            var upgraded = store.Load();
+            Assert(upgraded.SchemaVersion == 30 && upgraded.TopBar.SearchHotkey == "Alt+Q"
+                && !upgraded.TopBar.UseEverything && upgraded.TopBar.SearchWindowWidth == 420,
+                "v29 升级应保留原热键，并使用可选搜索来源和布局的默认值");
         }
         finally
         {
@@ -215,5 +241,14 @@ public static class TopBarSearchTests
         Assert(theme.Bindings.TopBarModules is null, "主题包默认不携带模块开关");
         theme.Bindings.TopBarModules = new TopBarModuleSwitches { Search = false };
         Assert(theme.Bindings.TopBarModules.Search == false, "主题包携带搜索开关");
+        var personal = new TopBarState
+        {
+            UseEverything = true,
+            SearchPresentation = SearchPresentation.Floating,
+            SearchWindowWidth = 520
+        };
+        ThemeRules.ApplyTopBar(theme, personal);
+        Assert(personal.UseEverything && personal.SearchPresentation == SearchPresentation.Floating
+            && personal.SearchWindowWidth == 520, "应用主题应保留本机搜索来源和入口布局");
     }
 }

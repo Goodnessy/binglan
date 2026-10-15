@@ -13,6 +13,9 @@ using BingLan.App.Windows;
 using BingLan.Core.Models;
 using BingLan.Core.Services;
 using BingLan.Core.TopBar;
+using BingLan.App.TopBar;
+using System.Buffers.Binary;
+using System.Text;
 
 /// <summary>
 /// Drives the top bar without a mouse: window style, module layout, deep-link clicks and
@@ -180,6 +183,9 @@ internal static class TopBarWindowTests
         RateDigitsDoNotShiftSearchBox(show, pump);
         SearchBoxSitsAtBarCentre(show, pump);
         RealClickOnResultOpensIt(show, pump);
+        SearchPresentationModes(show, pump);
+        EverythingProtocolAndFallback(show, pump);
+        WindowsIndexQueryRules();
     }
 
     private static void WeatherHoverOpensTooltip(Action<Window> show, Action pump)
@@ -647,6 +653,8 @@ internal static class TopBarWindowTests
             Assert(!bar.SearchSessionActive, "打开结果后结束会话");
             Assert(box.Text == string.Empty, "会话结束应清空输入框");
             Assert(bar.SearchFlyout is null, "会话结束应关闭结果浮层");
+            Assert(!((Panel)bar.FindName("CenterHost")).Children.OfType<Popup>().Any(),
+                "会话结束应释放浮层的结果控件和路径引用");
 
             // A second session opens its first result with the keyboard: physical Enter
             // reports Key.Return (WPF's Key.Enter is a different value no real key
@@ -894,6 +902,9 @@ internal static class TopBarWindowTests
         {
             var box = bar.SearchBox
                 ?? throw new InvalidOperationException("搜索模块应提供输入框");
+            var focusChanges = new List<string>();
+            box.LostKeyboardFocus += (_, args) => focusChanges.Add($"失焦到 {args.NewFocus?.GetType().Name ?? "无"}");
+            bar.Deactivated += (_, _) => focusChanges.Add($"顶栏失活，前台 {GetForegroundWindow():X}");
             bar.BeginSearchSession();
             var barHandle = new WindowInteropHelper(bar).Handle;
             ForceForeground(barHandle);
@@ -986,9 +997,6 @@ internal static class TopBarWindowTests
                 $"WPF 命中 {System.Windows.Input.Mouse.DirectlyOver?.GetType().Name ?? "无"}，位置 {System.Windows.Input.Mouse.GetPosition(row)}）");
             Assert(WindowFromPoint(readyCursor) == source.Handle,
                 "发送系统点击前鼠标应仍在结果浮层，避免点击其他应用");
-            var focusChanges = new List<string>();
-            box.LostKeyboardFocus += (_, args) => focusChanges.Add($"失焦到 {args.NewFocus?.GetType().Name ?? "无"}");
-            bar.Deactivated += (_, _) => focusChanges.Add($"顶栏失活，前台 {GetForegroundWindow():X}");
             SendMouseInputs(new MouseInput { Flags = MouseLeftDown });
             try
             {
@@ -1037,6 +1045,237 @@ internal static class TopBarWindowTests
             bar.Close();
             pump();
         }
+    }
+
+    private static void SearchPresentationModes(Action<Window> show, Action pump)
+    {
+        GetCursorPos(out var originalCursor);
+        try
+        {
+            foreach (var mode in new[] { SearchPresentation.Floating, SearchPresentation.Icon })
+            {
+                var state = BarState();
+                state.VisibilityMode = TopBarVisibilityMode.SmartHide;
+                state.SearchPresentation = mode;
+                using var sampler = new WindowsPerformanceSamplingService();
+                var environment = new FakeEnvironment { SearchCandidates = SearchSource() };
+                var bar = new TopBarWindow(state, new DesktopStyleState(), environment, sampler);
+                show(bar);
+                try
+                {
+                    var floating = bar.FloatingSearchWindow ?? throw new InvalidOperationException("应创建独立搜索宿主");
+                    Assert(floating.IsVisible == (mode == SearchPresentation.Floating), "图标模式默认收起，独立模式默认显示");
+                    if (mode == SearchPresentation.Icon)
+                    {
+                        var expand = LogicalDescendants(bar).OfType<Button>()
+                            .Single(button => AutomationProperties.GetName(button) == "展开搜索");
+                        expand.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                        pump();
+                    }
+                    else
+                    {
+                        bar.BeginSearchSession();
+                    }
+                    ForceForeground(new WindowInteropHelper(floating).Handle);
+                    bar.SearchBox!.Focus();
+                    Assert(WaitUntil(pump, () => bar.SearchSessionActive && bar.SearchBox.IsKeyboardFocused),
+                        "独立搜索应激活自己的输入框");
+                    Assert(floating.IsVisible, "热键会话应展开独立搜索框");
+                    Assert(Window.GetWindow(bar.SearchHost) == floating, "独立模式应复用原搜索控件");
+                    bar.SearchBox.Text = "wx";
+                    bar.PumpSearch();
+                    Assert(WaitUntil(pump, () => bar.SearchResults.Count > 0), "独立搜索应显示原有结果");
+                    PressKey(bar.SearchBox, System.Windows.Input.Key.Return);
+                    Assert(WaitUntil(pump, () => environment.OpenedTargets.Count == 1), "独立搜索 Enter 应打开结果");
+                    Assert(floating.IsVisible == (mode == SearchPresentation.Floating), "完成搜索后图标模式应收起");
+
+                    if (mode == SearchPresentation.Floating)
+                    {
+                        var widthHandle = (Thumb)floating.FindName("WidthHandle");
+                        var oldWidth = floating.Width;
+                        var cursorStart = floating.PointToScreen(new Point(40, 20));
+                        SetCursorPos((int)cursorStart.X, (int)cursorStart.Y);
+                        GetCursorPos(out var start);
+                        widthHandle.RaiseEvent(new DragStartedEventArgs(0, 0) { RoutedEvent = Thumb.DragStartedEvent });
+                        SetCursorPos(start.X + 90, start.Y);
+                        widthHandle.RaiseEvent(new DragDeltaEventArgs(90, 0) { RoutedEvent = Thumb.DragDeltaEvent });
+                        widthHandle.RaiseEvent(new DragCompletedEventArgs(90, 0, false) { RoutedEvent = Thumb.DragCompletedEvent });
+                        pump();
+                        Assert(floating.Width > oldWidth && state.SearchWindowWidth == floating.Width && environment.LayoutSaves == 1,
+                            $"调宽手柄应保存独立搜索框宽度（原宽 {oldWidth}，当前 {floating.Width}，保存 {state.SearchWindowWidth}，次数 {environment.LayoutSaves}）");
+                        var moveHandle = (Thumb)floating.FindName("MoveHandle");
+                        var oldLeft = floating.Left;
+                        GetCursorPos(out start);
+                        moveHandle.RaiseEvent(new DragStartedEventArgs(0, 0) { RoutedEvent = Thumb.DragStartedEvent });
+                        SetCursorPos(start.X + 60, start.Y + 30);
+                        moveHandle.RaiseEvent(new DragDeltaEventArgs(60, 30) { RoutedEvent = Thumb.DragDeltaEvent });
+                        moveHandle.RaiseEvent(new DragCompletedEventArgs(60, 30, false) { RoutedEvent = Thumb.DragCompletedEvent });
+                        pump();
+                        Assert(floating.Left != oldLeft && state.SearchWindowPlacement.Left == floating.Left && environment.LayoutSaves == 2,
+                            "专用拖动手柄应移动并保存位置");
+                        floating.Left = -10000;
+                        floating.Top = -10000;
+                        floating.RecoverPlacement();
+                        pump();
+                        Assert(floating.Left > -10000 && floating.Top > -10000, "屏幕外位置应恢复到可见工作区");
+                        floating.Close();
+                        pump();
+                        Assert(!floating.IsVisible, "关闭独立框应收起并保留热键宿主");
+                        bar.BeginSearchSession();
+                        pump();
+                        Assert(floating.IsVisible, "收起的独立框应能由搜索会话重新展开");
+                    }
+                    state.SearchPresentation = SearchPresentation.TopBar;
+                    bar.ApplyState();
+                    pump();
+                    Assert(bar.FloatingSearchWindow is null && !floating.IsVisible && Window.GetWindow(bar.SearchHost) == bar,
+                        "切回顶栏应关闭独立宿主并恢复居中输入框");
+                }
+                finally
+                {
+                    bar.Close();
+                    pump();
+                }
+            }
+        }
+        finally
+        {
+            SetCursorPos(originalCursor.X, originalCursor.Y);
+        }
+    }
+
+    private static void EverythingProtocolAndFallback(Action<Window> show, Action pump)
+    {
+        var request = EverythingSearchClient.CreateRequest((nint)0x1234, 91, "年度 报告");
+        Assert(BinaryPrimitives.ReadUInt32LittleEndian(request.AsSpan(8)) == 8
+            && BinaryPrimitives.ReadUInt32LittleEndian(request.AsSpan(16)) == EverythingSearchClient.MaximumCandidates,
+            "Everything 应使用有上限的文件名查询");
+        var pattern = Encoding.Unicode.GetString(request.AsSpan(20)).TrimEnd('\0');
+        Assert(System.Text.RegularExpressions.Regex.IsMatch("报告_年度.docx", pattern), "文件名多词应不受顺序限制");
+        var response = EverythingResponse(("年度报告.txt", @"D:\资料", 0u), ("年度报告", @"D:\资料", 1u));
+        var parsed = EverythingSearchClient.ParseResponse(response);
+        Assert(parsed.Available && parsed.Candidates.Count == 2
+            && parsed.Candidates[0].Path == @"D:\资料\年度报告.txt"
+            && parsed.Candidates[1].Kind == TopBarSearchItemKind.Folder, "应解析 Unicode 文件和文件夹路径");
+        BinaryPrimitives.WriteUInt32LittleEndian(response.AsSpan(32), uint.MaxValue);
+        Assert(!EverythingSearchClient.ParseResponse(response).Available, "损坏的回复偏移应安全回退");
+        Assert(!EverythingSearchClient.ParseResponse(new byte[12]).Available, "截断回复应安全回退");
+        Assert(EverythingSearchClient.ParseResponse(new byte[28]).Available, "有效的零结果不等于 Everything 不可用");
+
+        using var reply = new HwndSource(new HwndSourceParameters("BingLan Everything protocol test") { ParentWindow = (nint)(-3) });
+        using var client = new EverythingSearchClient(reply);
+        var missing = client.SearchAsync("报告", CancellationToken.None, 0);
+        Assert(WaitUntil(pump, () => missing.IsCompleted) && !missing.GetAwaiter().GetResult().Available,
+            "未运行 Everything 应立即返回可回退状态");
+        using var endpoint = new HwndSource(new HwndSourceParameters("BingLan IPC endpoint") { ParentWindow = (nint)(-3) });
+        var requestIds = new List<uint>();
+        endpoint.AddHook((_, message, _, lParam, ref handled) =>
+        {
+            if (message != 0x004A) return 0;
+            var data = Marshal.PtrToStructure<EverythingNativeMethods.CopyData>(lParam);
+            requestIds.Add(unchecked((uint)Marshal.ReadInt32(data.Data, 4)));
+            handled = true;
+            return 1;
+        });
+        void Reply(uint id)
+        {
+            var payload = EverythingResponse(("年度报告.txt", @"D:\资料", 0u));
+            var pinned = GCHandle.Alloc(payload, GCHandleType.Pinned);
+            try
+            {
+                var data = new EverythingNativeMethods.CopyData { Id = (nint)id, Length = payload.Length, Data = pinned.AddrOfPinnedObject() };
+                EverythingNativeMethods.SendMessageTimeout(reply.Handle, 0x004A, endpoint.Handle, ref data, 2, 150, out _);
+            }
+            finally { pinned.Free(); }
+        }
+        var oldQuery = client.SearchAsync("旧查询", CancellationToken.None, endpoint.Handle);
+        Assert(WaitUntil(pump, () => requestIds.Count == 1), "本机查询应通过真实 WM_COPYDATA 发出");
+        var newQuery = client.SearchAsync("年度", CancellationToken.None, endpoint.Handle);
+        Assert(WaitUntil(pump, () => requestIds.Count == 2), "新查询应使用独立回复标识");
+        Reply(requestIds[0]);
+        pump();
+        Assert(!newQuery.IsCompleted, "旧查询的迟到回复不能覆盖新结果");
+        Reply(requestIds[1]);
+        Assert(WaitUntil(pump, () => newQuery.IsCompleted) && newQuery.GetAwaiter().GetResult().Candidates.Count == 1,
+            "当前查询应接受对应的原生回复");
+        try { oldQuery.GetAwaiter().GetResult(); throw new InvalidOperationException("旧查询应取消"); }
+        catch (OperationCanceledException) { }
+        var noReply = client.SearchAsync("无回复", CancellationToken.None, endpoint.Handle);
+        Assert(WaitUntil(pump, () => noReply.IsCompleted) && !noReply.GetAwaiter().GetResult().Available,
+            "无回复应在有限等待后回退");
+        var absentState = BarState();
+        absentState.VisibilityMode = TopBarVisibilityMode.SmartHide;
+        absentState.UseEverything = true;
+        using var sampler = new WindowsPerformanceSamplingService();
+        var environment = new FakeEnvironment { SearchCandidates = SearchSource() };
+        var bar = new TopBarWindow(absentState, new DesktopStyleState(), environment, sampler);
+        show(bar);
+        try
+        {
+            bar.BeginSearchSession();
+            Assert(WaitUntil(pump, () => environment.CandidateReads > 0), "应继续读取基础候选");
+            bar.SearchBox!.Text = "微信";
+            bar.PumpSearch();
+            Assert(WaitUntil(pump, () => bar.SearchResults.Any(result => result.Path == @"C:\Users\a\Desktop\微信.lnk")),
+                "可选 Everything 不应取消桌面与应用搜索");
+        }
+        finally
+        {
+            bar.Close();
+            pump();
+        }
+    }
+
+    private static void WindowsIndexQueryRules()
+    {
+        var sql = WindowsIndexSearchClient.CreateQuery("年度 报告'_%[");
+        Assert(sql.StartsWith("SELECT TOP 128 ", StringComparison.Ordinal)
+            && sql.Contains("scope='file:'", StringComparison.Ordinal)
+            && sql.Contains("System.FileName LIKE '%年度%' AND System.FileName LIKE '%报告''[_][%][[]%'", StringComparison.Ordinal),
+            "系统索引应限制候选数量，并把多词、引号和通配符作为文件名字面量");
+        Assert(sql.Contains("CONTAINS(System.FileName, '\"年度*\"')", StringComparison.Ordinal)
+            && !WindowsIndexSearchClient.CreateQuery("报告", useWordPrefix: false).Contains("CONTAINS", StringComparison.Ordinal),
+            "系统索引应先用文件名词前缀缩小范围，再在空结果时回退包含查询");
+        Assert(WindowsIndexSearchClient.CreateQuery("content:hello").Contains("System.FileName LIKE '%content:hello%'", StringComparison.Ordinal),
+            "系统索引不应把用户输入解释为内容搜索");
+        var parsed = WindowsIndexSearchClient.ParseRows(new object[,]
+        {
+            { @"D:\资料\年度报告.txt", @"D:\资料", "relative.txt" },
+            { 0L, 16L, 0L }
+        });
+        Assert(parsed.Count == 2 && parsed[0].FullFileName == "年度报告.txt"
+            && parsed[1].Kind == TopBarSearchItemKind.Folder, "系统索引应保留文件与目录类型，排除非绝对路径");
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        try
+        {
+            WindowsIndexSearchClient.SearchAsync("报告", cancellation.Token).GetAwaiter().GetResult();
+            throw new InvalidOperationException("取消的查询不应访问系统索引");
+        }
+        catch (OperationCanceledException) { }
+    }
+
+    private static byte[] EverythingResponse(params (string Name, string Directory, uint Flags)[] entries)
+    {
+        using var stream = new System.IO.MemoryStream();
+        using var writer = new System.IO.BinaryWriter(stream, Encoding.Unicode, true);
+        writer.Write(new byte[28 + entries.Length * 12]);
+        for (var index = 0; index < entries.Length; index++)
+        {
+            var nameOffset = (uint)stream.Position;
+            writer.Write(Encoding.Unicode.GetBytes(entries[index].Name + '\0'));
+            var pathOffset = (uint)stream.Position;
+            writer.Write(Encoding.Unicode.GetBytes(entries[index].Directory + '\0'));
+            var next = stream.Position;
+            stream.Position = 28 + index * 12;
+            writer.Write(entries[index].Flags);
+            writer.Write(nameOffset);
+            writer.Write(pathOffset);
+            stream.Position = next;
+        }
+        stream.Position = 20;
+        writer.Write(entries.Length);
+        return stream.ToArray();
     }
 
     private static void PressKey(UIElement element, System.Windows.Input.Key key)
@@ -1096,6 +1335,8 @@ internal static class TopBarWindowTests
         internal IReadOnlyList<TopBarSearchCandidate> SearchCandidates { get; set; } = [];
         internal List<string> OpenedTargets { get; } = [];
         internal int CandidateReads { get; private set; }
+        internal int LayoutSaves { get; private set; }
+        public void SearchLayoutChanged() => LayoutSaves++;
 
         public bool Use24HourClock => true;
 

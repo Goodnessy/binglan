@@ -2411,6 +2411,8 @@ public sealed class WidgetCoordinator : IDisposable
             });
         }
 
+        public void SearchLayoutChanged() => owner.ScheduleSave();
+
         public void OpenTopBarSettings() => owner.OpenSettings("TopBar");
 
         public void OpenQuickSettings() =>

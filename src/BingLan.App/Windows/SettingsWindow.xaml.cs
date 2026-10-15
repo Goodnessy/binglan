@@ -1740,6 +1740,8 @@ public partial class SettingsWindow : Window
             TopBarNetworkCheckBox.IsChecked = state.Modules.Network;
             TopBarBatteryCheckBox.IsChecked = state.Modules.Battery;
             TopBarSearchCheckBox.IsChecked = state.Modules.Search;
+            TopBarEverythingCheckBox.IsChecked = state.UseEverything;
+            SearchPresentationComboBox.SelectedIndex = (int)state.SearchPresentation;
             LoadTopBarSearchHotkey();
 
             TopBarMonitorComboBox.Items.Clear();
@@ -1789,6 +1791,7 @@ public partial class SettingsWindow : Window
         state.Modules.Network = TopBarNetworkCheckBox.IsChecked == true;
         state.Modules.Battery = TopBarBatteryCheckBox.IsChecked == true;
         state.Modules.Search = TopBarSearchCheckBox.IsChecked == true;
+        state.UseEverything = TopBarEverythingCheckBox.IsChecked == true;
         if (TopBarMonitorComboBox.SelectedItem is ComboBoxItem { Tag: string deviceName })
         {
             state.MonitorDeviceName = deviceName;
@@ -1797,6 +1800,17 @@ public partial class SettingsWindow : Window
     }
 
     // ---------------------------------------------------------------- 顶栏搜索热键
+
+    private void SearchPresentation_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (_loadingTopBar || _topBarState is not { } state
+            || SearchPresentationComboBox.SelectedIndex < 0)
+        {
+            return;
+        }
+        state.SearchPresentation = (SearchPresentation)SearchPresentationComboBox.SelectedIndex;
+        ApplyTopBarChange("已应用搜索入口");
+    }
 
     /// <summary>
     /// A click-to-record capture: the next modifier-plus-key press becomes the search

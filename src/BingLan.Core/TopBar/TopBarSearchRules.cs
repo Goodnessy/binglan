@@ -8,9 +8,8 @@ public enum TopBarSearchItemKind
 }
 
 /// <summary>
-/// One thing the top bar's search can open: a Start-menu program or a desktop launcher
-/// (<see cref="TopBarSearchItemKind.App"/>), a desktop folder, or a desktop file. Pure
-/// data — the app builds it from its own sources and the rules score it.
+/// One thing search can open: an application, folder or file from local search
+/// sources. Pure data — the app obtains candidates and the rules score them.
 /// </summary>
 public sealed record TopBarSearchCandidate(
     TopBarSearchItemKind Kind,

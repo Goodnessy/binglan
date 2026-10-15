@@ -476,6 +476,11 @@ public sealed class LocalStateStore
             // and the hotkey keeps the default text, both via TopBarRules.Normalize.
             state.SchemaVersion = 29;
         }
+        if (state.SchemaVersion < 30)
+        {
+            // Search sources and presentation use their machine-local defaults.
+            state.SchemaVersion = 30;
+        }
         state.Updates ??= new UpdateState();
         state.QuickPlaces = QuickPlaceRules.Normalize(state.QuickPlaces);
         state.DismissedDesktopCategories = (state.DismissedDesktopCategories ?? [])
