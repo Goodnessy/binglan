@@ -52,12 +52,77 @@ internal static class TopBarWindowTests
     [DllImport("user32.dll")]
     private static extern bool SetCursorPos(int x, int y);
 
-    private const int WmLeftButtonDown = 0x0201;
-    private const int WmLeftButtonUp = 0x0202;
-    private const nint MkLeftButton = 0x0001;
+    [DllImport("user32.dll")]
+    private static extern nint WindowFromPoint(NativePoint point);
 
     [DllImport("user32.dll")]
-    private static extern bool PostMessageW(nint window, int message, nint wParam, nint lParam);
+    private static extern nint GetCapture();
+
+    private const uint MouseMove = 0x0001;
+    private const uint MouseLeftDown = 0x0002;
+    private const uint MouseLeftUp = 0x0004;
+    private const uint MouseMoveNoCoalesce = 0x2000;
+    private const uint MouseVirtualDesktop = 0x4000;
+    private const uint MouseAbsolute = 0x8000;
+    private const int VirtualScreenLeft = 76;
+    private const int VirtualScreenTop = 77;
+    private const int VirtualScreenWidth = 78;
+    private const int VirtualScreenHeight = 79;
+
+    // MOUSEINPUT is the largest INPUT union member; sequential layout includes the
+    // native alignment after the type field on both x86 and x64.
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MouseInputEvent
+    {
+        public uint Type;
+        public MouseInput Mouse;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MouseInput
+    {
+        public int X;
+        public int Y;
+        public uint Data;
+        public uint Flags;
+        public uint Time;
+        public nuint ExtraInformation;
+    }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern uint SendInput(uint count, MouseInputEvent[] inputs, int size);
+
+    [DllImport("user32.dll")]
+    private static extern int GetSystemMetrics(int index);
+
+    private static void SendMouseInputs(params MouseInput[] mouseInputs)
+    {
+        var inputs = mouseInputs.Select(mouse => new MouseInputEvent { Type = 0, Mouse = mouse }).ToArray();
+        var sent = SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<MouseInputEvent>());
+        if (sent != inputs.Length)
+        {
+            var error = Marshal.GetLastWin32Error();
+            // A partially inserted click must not leave the mouse button held.
+            MouseInputEvent[] release = [new() { Mouse = new MouseInput { Flags = MouseLeftUp } }];
+            _ = SendInput(1, release, Marshal.SizeOf<MouseInputEvent>());
+            throw new InvalidOperationException($"系统鼠标输入失败：{sent}/{inputs.Length}，错误 {error}");
+        }
+    }
+
+    private static void MoveMouseTo(int x, int y)
+    {
+        var left = GetSystemMetrics(VirtualScreenLeft);
+        var top = GetSystemMetrics(VirtualScreenTop);
+        var width = GetSystemMetrics(VirtualScreenWidth);
+        var height = GetSystemMetrics(VirtualScreenHeight);
+        Assert(width > 0 && height > 0, "虚拟桌面应有有效尺寸");
+        SendMouseInputs(new MouseInput
+        {
+            X = (int)((x - left + 0.5) * 65536d / width),
+            Y = (int)((y - top + 0.5) * 65536d / height),
+            Flags = MouseMove | MouseMoveNoCoalesce | MouseVirtualDesktop | MouseAbsolute
+        });
+    }
 
     [DllImport("user32.dll")]
     private static extern uint GetWindowThreadProcessId(nint window, out uint processId);
@@ -84,6 +149,7 @@ internal static class TopBarWindowTests
         var currentThread = GetCurrentThreadId();
         if (foregroundThread == currentThread || foregroundThread == 0)
         {
+            _ = SetForegroundWindow(window);
             return;
         }
         _ = AttachThreadInput(currentThread, foregroundThread, true);
@@ -812,9 +878,8 @@ internal static class TopBarWindowTests
     /// A click on a result row must open that result through the real message path,
     /// and the flyout must never activate — an activating popup loses the bar the
     /// foreground mid-click, the session tears down, and the click lands nowhere (the
-    /// reported "found it, but clicking does nothing"). The click is posted into the
-    /// flyout's own window at the row's position because OS-level input injection is
-    /// unreliable on the machines this suite runs on.
+    /// result never opens). System mouse input exercises native activation, WPF hit
+    /// testing and the row handler after the popup is visible and ready.
     /// </summary>
     private static void RealClickOnResultOpensIt(Action<Window> show, Action pump)
     {
@@ -830,6 +895,10 @@ internal static class TopBarWindowTests
             var box = bar.SearchBox
                 ?? throw new InvalidOperationException("搜索模块应提供输入框");
             bar.BeginSearchSession();
+            var barHandle = new WindowInteropHelper(bar).Handle;
+            ForceForeground(barHandle);
+            Assert(WaitUntil(pump, () => GetForegroundWindow() == barHandle && box.IsKeyboardFocused),
+                "真实点击测试应先取得前台和搜索框焦点");
             Assert(WaitUntil(pump, () => environment.CandidateReads > 0),
                 "会话开始应在后台读取搜索数据源");
             box.Text = "wx";
@@ -891,27 +960,39 @@ internal static class TopBarWindowTests
             Assert((flyoutStyle & WsExNoActivateFlag) != 0,
                 "结果浮层窗口应永不激活，点击不应拆散搜索会话");
 
-            SetCursorPos(targetX, targetY);
-            pump();
             // The session's bar must be WPF-active for the flyout to route mouse
             // input (a real session always is); recreate that foreground here.
-            ForceForeground(new WindowInteropHelper(bar).Handle);
-            pump();
-            // The click is posted straight into the flyout's own message queue at the
-            // row's client position: it goes through the real WPF routing (hit test,
-            // row handler, deferred open) and cannot be swallowed by this machine's
-            // global input state, which does eat OS-level injected clicks. What guards
-            // the activation race itself is the style assert above and the product
-            // keeping the flyout never-activating.
-            var clientX = targetX - flyoutRect.Left;
-            var clientY = targetY - flyoutRect.Top;
-            var clickPosition = (nint)(((clientY & 0xFFFF) << 16) | (clientX & 0xFFFF));
-            _ = PostMessageW(source.Handle, WmLeftButtonDown, MkLeftButton, clickPosition);
-            Thread.Sleep(40);
-            _ = PostMessageW(source.Handle, WmLeftButtonUp, 0, clickPosition);
+            ForceForeground(barHandle);
+            SetCursorPos(targetX, targetY);
+            // A layered popup can finish layout before its first pixels are presented.
+            // Native hit testing must see the popup before system input enters it.
+            Assert(WaitUntil(pump, () => WindowFromPoint(new NativePoint { X = targetX, Y = targetY }) == source.Handle),
+                "透明浮层应完成呈现并接受原生鼠标命中");
+            // Absolute system input keeps coordinates independent of mouse speed
+            // and acceleration. System routing must enter this window before clicks;
+            // posted messages alone can be followed by a stale WM_MOUSELEAVE.
+            // A separate entry point guarantees movement even at the row centre.
+            var entryX = targetX - Math.Min(16, (int)((bottomRight.X - topLeft.X) / 4d));
+            MoveMouseTo(entryX, targetY);
+            Assert(WaitUntil(pump, () => row.IsMouseOver), "系统鼠标移动应命中结果行");
+            MoveMouseTo(targetX, targetY);
+            var ready = WaitUntil(pump, () => GetForegroundWindow() == barHandle
+                && bar.SearchSessionActive && row.IsMouseOver);
+            GetCursorPos(out var readyCursor);
+            Assert(ready,
+                $"发送点击前顶栏应保持前台，WPF 鼠标应命中结果行（前台 {GetForegroundWindow():X}，顶栏 {barHandle:X}，" +
+                $"会话 {bar.SearchSessionActive}，WPF 激活 {bar.IsActive}，焦点 {box.IsKeyboardFocused}，" +
+                $"鼠标 {readyCursor.X},{readyCursor.Y}，原生命中 {WindowFromPoint(readyCursor):X}，浮层 {source.Handle:X}，" +
+                $"WPF 命中 {System.Windows.Input.Mouse.DirectlyOver?.GetType().Name ?? "无"}，位置 {System.Windows.Input.Mouse.GetPosition(row)}）");
+            Assert(WindowFromPoint(readyCursor) == source.Handle,
+                "发送系统点击前鼠标应仍在结果浮层，避免点击其他应用");
+            SendMouseInputs(new MouseInput { Flags = MouseLeftDown }, new MouseInput { Flags = MouseLeftUp });
             if (!WaitUntil(pump, () => environment.OpenedTargets.Count >= 1))
             {
                 GetWindowRect(source.Handle, out var popupRect);
+                GetCursorPos(out var actualCursor);
+                var cursorWindow = WindowFromPoint(actualCursor);
+                GetWindowThreadProcessId(cursorWindow, out var cursorProcess);
                 throw new InvalidOperationException(
                     "点击结果行应打开该结果" +
                     $"（浮层收到原始按下/抬起 {rawDownCount}/{rawUpCount}，" +
@@ -919,10 +1000,14 @@ internal static class TopBarWindowTests
                     $"卡片收到抬起 {cardSawClick}，行收到抬起 {rowSawClick}，" +
                     $"会话活跃 {bar.SearchSessionActive}，结果数 {bar.SearchResults.Count}，" +
                     $"浮层矩形 {popupRect.Left},{popupRect.Top}-{popupRect.Right},{popupRect.Bottom}，" +
-                    $"行心 {targetX},{targetY}）");
+                    $"行心 {targetX},{targetY}，实际鼠标 {actualCursor.X},{actualCursor.Y}，" +
+                    $"命中窗口 {cursorWindow:X}/进程 {cursorProcess}，浮层 {source.Handle:X}，" +
+                    $"前台 {GetForegroundWindow():X}，顶栏 {new WindowInteropHelper(bar).Handle:X}，捕获 {GetCapture():X}）");
             }
             Assert(environment.OpenedTargets[0] == @"C:\Users\a\Desktop\微信.lnk",
                 "点击的首行应是微信");
+            Assert(environment.OpenedTargets.Count == 1 && rowSawClick && cardSawClick,
+                "一次系统点击应经过结果行并且只打开一次");
             Assert(!bar.SearchSessionActive, "打开结果后搜索会话应结束");
         }
         finally

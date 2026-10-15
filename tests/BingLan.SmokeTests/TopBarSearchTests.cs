@@ -61,6 +61,54 @@ public static class TopBarSearchTests
         var byName = TopBarSearchRules.Search(new[] { archive, notes }, "微信");
         Assert(byName.Count == 2 && byName[0].Path == notes.Path, "精确名称排在包含匹配前");
 
+        // A query token that is a whole word of the name outranks a substring hit;
+        // both entries are files so the app boost stays out of the comparison.
+        var wordHit = new TopBarSearchCandidate(
+            TopBarSearchItemKind.File, "Google Chrome", "Google Chrome.html", @"C:\d\chrome.html");
+        var substringHit = new TopBarSearchCandidate(
+            TopBarSearchItemKind.File, "Chromebook 指南", "Chromebook 指南.html", @"C:\d\book.html");
+        var byWord = TopBarSearchRules.Search(new[] { substringHit, wordHit }, "chrome");
+        Assert(byWord.Count == 2 && byWord[0].Path == wordHit.Path, "整词命中排在包含命中前");
+
+        // Typos in longer tokens still hit at the lowest rung; short tokens and far
+        // strings stay unmatched so the tolerance cannot flood the list with guesses.
+        var chrome = new TopBarSearchCandidate(
+            TopBarSearchItemKind.File, "Chrome", "Chrome.exe", @"C:\d\Chrome.exe");
+        Assert(TopBarSearchRules.Search(new[] { chrome }, "chorme").Count == 1, "较长词 1 字之差容错命中");
+        var shortWord = new TopBarSearchCandidate(
+            TopBarSearchItemKind.File, "Cat", "Cat.txt", @"C:\d\Cat.txt");
+        Assert(TopBarSearchRules.Search(new[] { shortWord }, "cot").Count == 0, "短词即使只差一个字符也不做容错");
+        Assert(TopBarSearchRules.Search(new[] { chrome }, "chzzzzzz").Count == 0, "距离过远不容错");
+        var mixed = TopBarSearchRules.Search(new[] { wordHit, substringHit, chrome }, "google chorme");
+        Assert(mixed.Count == 1 && mixed[0].Path == wordHit.Path, "容错词与整词组合命中");
+
+        var typoApp = new TopBarSearchCandidate(
+            TopBarSearchItemKind.App, "Google Chome", "Google Chome.lnk", @"C:\d\Chome.lnk");
+        var normal = TopBarSearchRules.Search(new[] { typoApp, substringHit }, "chrome");
+        Assert(normal.Count == 1 && normal[0].Path == substringHit.Path,
+            "存在正常结果时不混入容错结果，也不补满列表");
+        var normalMulti = TopBarSearchRules.Search(new[] { wordHit, typoApp }, "google chrome");
+        Assert(normalMulti.Count == 1 && normalMulti[0].Path == wordHit.Path,
+            "多关键词正常命中时不启用容错");
+
+        var setup = new TopBarSearchCandidate(
+            TopBarSearchItemKind.File, "Google ChromeSetup", "Google ChromeSetup.exe", @"C:\d\setup.exe");
+        foreach (var typo in new[] { "chorme", "chrone", "chrme", "chxrome" })
+        {
+            var fallback = TopBarSearchRules.Search(new[] { setup }, "google " + typo);
+            Assert(fallback.Count == 1, $"长单词前缀支持交换、替换、缺字和多字：{typo}");
+        }
+        var longWord = new TopBarSearchCandidate(
+            TopBarSearchItemKind.File, "NotepadSetup", "NotepadSetup.exe", @"C:\d\notepad.exe");
+        Assert(TopBarSearchRules.Search(new[] { longWord }, "nxtxpad").Count == 1,
+            "七字符词允许两次编辑");
+        Assert(TopBarSearchRules.Search(new[] { longWord }, "nxxxpad").Count == 0,
+            "七字符词超过两次编辑不命中");
+        Assert(TopBarSearchRules.Search(new[] { chrome }, "chxxme").Count == 0,
+            "六字符词超过一次编辑不命中");
+        Assert(TopBarSearchRules.Search(new[] { setup }, "missing chorme").Count == 0,
+            "容错阶段仍要求所有关键词命中");
+
         var initials = TopBarSearchRules.Search(candidates, "wx");
         Assert(initials.Any(item => item.DisplayName == "微信"), "拼音首字母 wx 命中微信");
         Assert(initials.All(item => item.Path != report.Path), "首字母不误伤无关注果");

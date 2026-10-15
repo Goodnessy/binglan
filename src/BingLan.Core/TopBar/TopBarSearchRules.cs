@@ -37,14 +37,26 @@ public static class TopBarSearchRules
     public const uint ModifierShift = 0x0004;
     public const uint ModifierWindows = 0x0008;
 
-    private const int ScoreExact = 4;
+    private const int ScoreExact = 6;
+    private const int ScoreWordExact = 5;
+    private const int ScorePrefix = 4;
+    private const int ScoreContains = 3;
+    private const int ScoreFuzzy = 1;
     private static readonly char[] QuerySeparators = [' ', '　', '\t'];
+    private static readonly char[] WordSeparators =
+        [' ', '\t', '.', '_', '-', '(', ')', '[', ']', '+', '&', '，', '、', '·'];
+
+    private readonly record struct CandidateKeys(
+        string Name,
+        string FileName,
+        string Initials);
 
     /// <summary>
     /// Scores candidates against the whitespace-separated query. Every token must hit
-    /// (name, pinyin initials or full file name); the sum of token scores orders the
-    /// result, apps lead files by a fixed boost, and equal scores fall back to kind
-    /// then name so the list never reorders between identical searches.
+    /// the name, pinyin initials or full file name. Regular matches rank by exact,
+    /// whole-word, prefix and contains quality. Only an empty regular result enables
+    /// typo matching for tokens of 4+ characters. All tokens must still match.
+    /// Apps receive a fixed boost; ties fall back to kind, name and path.
     /// </summary>
     public static IReadOnlyList<TopBarSearchCandidate> Search(
         IEnumerable<TopBarSearchCandidate> candidates,
@@ -59,30 +71,44 @@ public static class TopBarSearchRules
             return [];
         }
 
+        // The fallback may need a second pass, including for a one-shot enumerable.
+        var source = candidates as IReadOnlyList<TopBarSearchCandidate> ?? candidates.ToArray();
         var scored = new List<(int Score, TopBarSearchCandidate Candidate)>();
-        foreach (var candidate in candidates)
+        for (var pass = 0; pass < 2; pass++)
         {
-            var total = 0;
-            foreach (var token in tokens)
+            foreach (var candidate in source)
             {
-                var score = TokenScore(candidate, token);
-                if (score == 0)
+                var keys = new CandidateKeys(
+                    candidate.DisplayName.ToLowerInvariant(),
+                    candidate.FullFileName.ToLowerInvariant(),
+                    PinyinInitials(candidate.DisplayName));
+                var total = 0;
+                foreach (var token in tokens)
                 {
-                    total = 0;
-                    break;
+                    var score = TokenScore(keys, token);
+                    if (score == 0 && pass == 1)
+                    {
+                        score = FuzzyScore(keys.Name, token);
+                    }
+                    if (score == 0)
+                    {
+                        total = 0;
+                        break;
+                    }
+                    total += score;
                 }
-                total += score;
+                if (total > 0)
+                {
+                    if (candidate.Kind == TopBarSearchItemKind.App)
+                    {
+                        total += 2;
+                    }
+                    scored.Add((total, candidate));
+                }
             }
-            if (total > 0)
+            if (scored.Count > 0 || !tokens.Any(token => token.Length >= 4))
             {
-                // The boost sits between two match qualities: a name-prefix app still
-                // leads a merely-contained file, while an exact file match stays ahead
-                // of an app that only contains the query.
-                if (candidate.Kind == TopBarSearchItemKind.App)
-                {
-                    total += 2;
-                }
-                scored.Add((total, candidate));
+                break;
             }
         }
 
@@ -96,19 +122,25 @@ public static class TopBarSearchRules
             .ToArray();
     }
 
-    private static int TokenScore(TopBarSearchCandidate candidate, string token)
+    private static int TokenScore(CandidateKeys keys, string token)
     {
-        var name = candidate.DisplayName.ToLowerInvariant();
         // The full file name carries the extension, so its match always scores one
         // step below the same hit on the display name ("微信" over "微信.lnk").
-        var fileName = candidate.FullFileName.ToLowerInvariant();
-        var initials = PinyinInitials(candidate.DisplayName);
-        return new[]
+        var nameScore = Quality(keys.Name, token, 0);
+        var score = Math.Max(
+            nameScore,
+            Math.Max(Quality(keys.Initials, token, 0), Quality(keys.FileName, token, -1)));
+        if (nameScore > 0 && score < ScoreWordExact)
         {
-            Quality(name, token, 0),
-            Quality(initials, token, 0),
-            Quality(fileName, token, -1)
-        }.Max();
+            foreach (var range in keys.Name.AsSpan().SplitAny(WordSeparators))
+            {
+                if (keys.Name.AsSpan(range).SequenceEqual(token))
+                {
+                    return ScoreWordExact;
+                }
+            }
+        }
+        return score;
     }
 
     private static int Quality(string key, string token, int offset) => key.Length == 0
@@ -116,10 +148,86 @@ public static class TopBarSearchRules
         : key.Equals(token, StringComparison.Ordinal)
             ? ScoreExact + offset
             : key.StartsWith(token, StringComparison.Ordinal)
-                ? ScoreExact - 1 + offset
+                ? ScorePrefix + offset
                 : key.Contains(token, StringComparison.Ordinal)
-                    ? ScoreExact - 2 + offset
+                    ? ScoreContains + offset
                     : 0;
+
+    private static int FuzzyScore(string name, string token)
+    {
+        // The distance budget grows with the token so one wrong letter in a short
+        // word cannot flood the results with guesses.
+        var maxDistance = token.Length switch { >= 7 => 2, >= 4 => 1, _ => 0 };
+        if (maxDistance == 0)
+        {
+            return 0;
+        }
+
+        foreach (var range in name.AsSpan().SplitAny(WordSeparators))
+        {
+            var word = name.AsSpan(range);
+            if (word.Length >= token.Length - maxDistance && MatchesTypoPrefix(token, word, maxDistance))
+            {
+                return ScoreFuzzy;
+            }
+        }
+        return 0;
+    }
+
+    private static bool MatchesTypoPrefix(ReadOnlySpan<char> token, ReadOnlySpan<char> word, int maxDistance)
+    {
+        // Only the bounded word head participates. This quadratic DP is for short
+        // filename tokens after an empty regular search; use a banded DP if candidate
+        // sources expand to long text. Typical tokens need no heap allocation.
+        var windowLength = Math.Min(word.Length, token.Length + maxDistance);
+        var width = windowLength + 1;
+        Span<int> buffer = width <= 128 ? stackalloc int[width * 3] : new int[width * 3];
+        var previousPrevious = buffer[..width];
+        var previous = buffer.Slice(width, width);
+        var current = buffer.Slice(width * 2, width);
+        for (var column = 0; column <= windowLength; column++)
+        {
+            previous[column] = column;
+        }
+        for (var row = 1; row <= token.Length; row++)
+        {
+            current[0] = row;
+            var rowMinimum = row;
+            for (var column = 1; column <= windowLength; column++)
+            {
+                var cost = token[row - 1] == word[column - 1] ? 0 : 1;
+                var distance = Math.Min(
+                    Math.Min(previous[column] + 1, current[column - 1] + 1),
+                    previous[column - 1] + cost);
+                if (row > 1 && column > 1
+                    && token[row - 1] == word[column - 2]
+                    && token[row - 2] == word[column - 1])
+                {
+                    distance = Math.Min(distance, previousPrevious[column - 2] + 1);
+                }
+                current[column] = distance;
+                rowMinimum = Math.Min(rowMinimum, distance);
+            }
+            if (rowMinimum > maxDistance)
+            {
+                return false;
+            }
+            var spare = previousPrevious;
+            previousPrevious = previous;
+            previous = current;
+            current = spare;
+        }
+        // The best prefix may be shorter or longer than the query after a missing
+        // or extra character; the rest of the word does not consume typo budget.
+        for (var column = token.Length - maxDistance; column <= windowLength; column++)
+        {
+            if (previous[column] <= maxDistance)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
 
     /// <summary>
     /// The pinyin initial letters of the text's Chinese characters, with ASCII letters
