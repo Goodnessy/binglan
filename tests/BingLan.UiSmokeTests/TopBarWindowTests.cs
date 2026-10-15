@@ -6,6 +6,7 @@ using System.Windows.Automation.Provider;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Interop;
+using System.Windows.Input;
 using System.Windows.Media;
 using BingLan.App.Interop;
 using BingLan.App.Services;
@@ -698,7 +699,20 @@ internal static class TopBarWindowTests
         {
             var box = bar.SearchBox
                 ?? throw new InvalidOperationException("搜索模块应提供输入框");
+            Assert(InputMethod.GetPreferredImeState(box) == InputMethodState.On,
+                "搜索框获得焦点时应启用输入法，避免沿用关闭状态而直接输入英文字母");
+            Assert(InputMethod.GetPreferredImeConversionMode(box) == ImeConversionModeValues.Native,
+                "搜索框应首选本地文字转换，启用输入法但仍为英文转换也无法输入中文");
             bar.BeginSearchSession();
+            if (InputLanguageManager.Current.CurrentInputLanguage.TwoLetterISOLanguageName == "zh"
+                && box.IsKeyboardFocused)
+            {
+                InputMethod.Current.ImeConversionMode = ImeConversionModeValues.Alphanumeric;
+                bar.EndSearchSession();
+                bar.BeginSearchSession();
+                Assert((InputMethod.Current.ImeConversionMode & ImeConversionModeValues.Native) != 0,
+                    "重新打开搜索应恢复中文转换，即使输入框保留逻辑焦点、没有再次触发焦点事件");
+            }
             box.Text = "wx";
             bar.PumpSearch();
             Assert(WaitUntil(pump, () => bar.SearchResults.Count > 0), "搜索应有结果");
@@ -710,6 +724,17 @@ internal static class TopBarWindowTests
             pump();
             Assert(environment.OpenedTargets.Count == opened, "组合态按键不得打开结果");
             Assert(bar.SearchSessionActive, "组合态按键不得结束会话");
+            box.Text = "ni";
+            bar.PumpSearch();
+            pump();
+            Assert(bar.SearchFlyout is null && bar.SearchResults.Count == 0,
+                "拼音组合态不能弹出搜索结果遮挡输入法候选");
+            box.RaiseEvent(new TextCompositionEventArgs(Keyboard.PrimaryDevice,
+                new TextComposition(InputManager.Current, box, "微信"))
+                { RoutedEvent = TextCompositionManager.PreviewTextInputEvent });
+            box.Text = "wx";
+            bar.PumpSearch();
+            Assert(WaitUntil(pump, () => bar.SearchResults.Count > 0), "组合提交后应恢复搜索");
 
             // 普通回车：同步栈内不得有任何动作，一拍后才打开。
             PressKey(box, System.Windows.Input.Key.Return);
@@ -749,6 +774,11 @@ internal static class TopBarWindowTests
             bar.BeginSearchSession();
             pump();
             Assert(bar.SearchSessionActive, "会话应处于激活状态");
+            var currentBox = bar.SearchBox;
+            currentBox!.Text = "微信";
+            bar.ApplyState();
+            Assert(ReferenceEquals(currentBox, bar.SearchBox) && bar.SearchSessionActive && currentBox.Text == "微信",
+                "未改变模块的外观或显示器刷新不能重建输入框、清除中文或结束会话");
             style = (long)GetWindowLongPtr(handle, GwlExStyle);
             Assert((style & WsExNoActivateFlag) == 0, "会话期间允许窗口激活接收键盘");
             // The dock looks through the session to the window it borrowed the
@@ -905,11 +935,20 @@ internal static class TopBarWindowTests
             var focusChanges = new List<string>();
             box.LostKeyboardFocus += (_, args) => focusChanges.Add($"失焦到 {args.NewFocus?.GetType().Name ?? "无"}");
             bar.Deactivated += (_, _) => focusChanges.Add($"顶栏失活，前台 {GetForegroundWindow():X}");
-            bar.BeginSearchSession();
             var barHandle = new WindowInteropHelper(bar).Handle;
-            ForceForeground(barHandle);
+            // A real click gives this process Windows' foreground grant. Calling
+            // BeginSearchSession from a background test does not receive that grant.
+            var boxCentre = box.PointToScreen(new Point(box.ActualWidth / 2, box.ActualHeight / 2));
+            var boxX = (int)boxCentre.X;
+            var boxY = (int)boxCentre.Y;
+            MoveMouseTo(boxX, boxY);
+            Assert(WaitUntil(pump, () => WindowFromPoint(new NativePoint { X = boxX, Y = boxY }) == barHandle),
+                "点击搜索框前应由顶栏接收原生命中，避免点击其他应用");
+            SendMouseInputs(new MouseInput { Flags = MouseLeftDown }, new MouseInput { Flags = MouseLeftUp });
             Assert(WaitUntil(pump, () => GetForegroundWindow() == barHandle && box.IsKeyboardFocused),
-                "真实点击测试应先取得前台和搜索框焦点");
+                $"真实点击测试应先取得前台和搜索框焦点（前台 {GetForegroundWindow():X}，顶栏 {barHandle:X}，" +
+                $"会话 {bar.SearchSessionActive}，WPF 激活 {bar.IsActive}，焦点 {Keyboard.FocusedElement?.GetType().Name ?? "无"}，" +
+                $"{string.Join("；", focusChanges)}）");
             Assert(WaitUntil(pump, () => environment.CandidateReads > 0),
                 "会话开始应在后台读取搜索数据源");
             box.Text = "wx";
@@ -1125,10 +1164,29 @@ internal static class TopBarWindowTests
                         pump();
                         Assert(floating.IsVisible, "收起的独立框应能由搜索会话重新展开");
                     }
+                    var sharedBox = bar.SearchBox;
+                    if (mode == SearchPresentation.Floating)
+                    {
+                        state.SearchPresentation = SearchPresentation.Icon;
+                        bar.ApplyState();
+                        Assert(ReferenceEquals(floating, bar.FloatingSearchWindow) && ReferenceEquals(sharedBox, bar.SearchBox) && !floating.IsVisible,
+                            "独立框与图标切换应复用窗口和输入控件");
+                        state.SearchPresentation = SearchPresentation.Floating;
+                        state.SearchSurfaceColor = "#F3F6FC";
+                        state.SearchSurfaceOpacity = 0.8d;
+                        state.SearchCornerRadius = 18d;
+                        bar.ApplyState();
+                        Assert(ReferenceEquals(floating, bar.FloatingSearchWindow) && ((SolidColorBrush)bar.SearchBox!.Foreground).Color.R < 100,
+                            "浅色搜索框应沿用宿主并自动显示深色文字");
+                        var frame = (Border)floating.FindName("SearchFrame");
+                        Assert(frame.CornerRadius.TopLeft == 18d && ((SolidColorBrush)frame.Background).Color.A == 204,
+                            "搜索框透明度和圆角应实际应用到窗口表面");
+                    }
                     state.SearchPresentation = SearchPresentation.TopBar;
                     bar.ApplyState();
                     pump();
-                    Assert(bar.FloatingSearchWindow is null && !floating.IsVisible && Window.GetWindow(bar.SearchHost) == bar,
+                    Assert(bar.FloatingSearchWindow is null && !floating.IsVisible && Window.GetWindow(bar.SearchHost) == bar
+                        && ReferenceEquals(sharedBox, bar.SearchBox),
                         "切回顶栏应关闭独立宿主并恢复居中输入框");
                 }
                 finally

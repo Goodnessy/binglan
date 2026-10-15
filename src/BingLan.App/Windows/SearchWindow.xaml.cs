@@ -66,6 +66,25 @@ public partial class SearchWindow : Window
 
     internal event Action? Dismissed;
 
+    internal void DetachSearchContent() => SearchContent.Content = null;
+
+    internal void ApplyAppearance(DockGlass glass)
+    {
+        var surface = new System.Windows.Media.SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(glass.Surface));
+        var border = new System.Windows.Media.SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(glass.Border));
+        var ink = new System.Windows.Media.SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(glass.RunningDot));
+        surface.Freeze(); border.Freeze(); ink.Freeze();
+        SearchFrame.Background = surface;
+        SearchFrame.BorderBrush = border;
+        SearchFrame.CornerRadius = new CornerRadius(_state.SearchCornerRadius);
+        foreach (var handle in new[] { MoveHandle, WidthHandle })
+        {
+            handle.ApplyTemplate();
+            if (System.Windows.Media.VisualTreeHelper.GetChildrenCount(handle) > 0
+                && System.Windows.Media.VisualTreeHelper.GetChild(handle, 0) is Border { Child: TextBlock text }) text.Foreground = ink;
+        }
+    }
+
     internal void RecoverPlacement()
     {
         WindowScreenRecovery.RestoreLayout(this, _state.SearchWindowPlacement);

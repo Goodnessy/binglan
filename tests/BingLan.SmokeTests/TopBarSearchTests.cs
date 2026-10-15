@@ -177,10 +177,15 @@ public static class TopBarSearchTests
             state.TopBar.UseEverything = true;
             state.TopBar.SearchPresentation = SearchPresentation.Floating;
             state.TopBar.SearchWindowWidth = 560;
+            state.TopBar.SearchSurfaceColor = "#F3F6FC";
+            state.TopBar.SearchSurfaceOpacity = 0.7;
+            state.TopBar.SearchCornerRadius = 16;
             state.TopBar.SearchWindowPlacement.Left = 180;
             store.Save(state);
 
             var reloaded = store.Load();
+            Assert(reloaded.TopBar.SearchSurfaceColor == "#F3F6FC" && reloaded.TopBar.SearchSurfaceOpacity == 0.7
+                && reloaded.TopBar.SearchCornerRadius == 16, "独立搜索框外观应持久化");
             Assert(reloaded.TopBar.SearchHotkey == "Alt+Q", "热键持久化往返一致");
             Assert(reloaded.TopBar.UseEverything && reloaded.TopBar.SearchPresentation == SearchPresentation.Floating
                 && reloaded.TopBar.SearchWindowWidth == 560 && reloaded.TopBar.SearchWindowPlacement.Left == 180,
@@ -225,9 +230,25 @@ public static class TopBarSearchTests
             }
             File.WriteAllText(Path.Combine(directory, "widgets.json"), v29.ToJsonString());
             var upgraded = store.Load();
-            Assert(upgraded.SchemaVersion == 30 && upgraded.TopBar.SearchHotkey == "Alt+Q"
+            Assert(upgraded.SchemaVersion == AppState.CurrentSchemaVersion && upgraded.TopBar.SearchHotkey == "Alt+Q"
                 && !upgraded.TopBar.UseEverything && upgraded.TopBar.SearchWindowWidth == 420,
                 "v29 升级应保留原热键，并使用可选搜索来源和布局的默认值");
+            var v30 = JsonSerializer.SerializeToNode(state)!;
+            v30["SchemaVersion"] = 30;
+            foreach (var field in new[] { "SearchFollowCardLook", "SearchSurfaceColor", "SearchSurfaceOpacity", "SearchCornerRadius" })
+                v30["TopBar"]!.AsObject().Remove(field);
+            File.WriteAllText(Path.Combine(directory, "widgets.json"), v30.ToJsonString());
+            var withAppearance = store.Load();
+            Assert(withAppearance.SchemaVersion == AppState.CurrentSchemaVersion && withAppearance.TopBar.SearchWindowWidth == 560
+                && withAppearance.TopBar.SearchSurfaceColor == TopBarState.DefaultSurfaceColor
+                && withAppearance.TopBar.SearchCornerRadius == 10, "v30 应保留布局并迁移搜索外观默认值");
+            withAppearance.TopBar.SearchSurfaceColor = "invalid";
+            withAppearance.TopBar.SearchSurfaceOpacity = double.NaN;
+            withAppearance.TopBar.SearchCornerRadius = double.PositiveInfinity;
+            TopBarRules.Normalize(withAppearance.TopBar);
+            Assert(withAppearance.TopBar.SearchSurfaceColor == TopBarState.DefaultSurfaceColor
+                && withAppearance.TopBar.SearchSurfaceOpacity == 0.94 && withAppearance.TopBar.SearchCornerRadius == 10,
+                "损坏的搜索外观应恢复安全默认值");
         }
         finally
         {
@@ -245,10 +266,13 @@ public static class TopBarSearchTests
         {
             UseEverything = true,
             SearchPresentation = SearchPresentation.Floating,
-            SearchWindowWidth = 520
+            SearchWindowWidth = 520,
+            SearchSurfaceColor = "#F3F6FC",
+            SearchCornerRadius = 16
         };
         ThemeRules.ApplyTopBar(theme, personal);
         Assert(personal.UseEverything && personal.SearchPresentation == SearchPresentation.Floating
-            && personal.SearchWindowWidth == 520, "应用主题应保留本机搜索来源和入口布局");
+            && personal.SearchWindowWidth == 520 && personal.SearchSurfaceColor == "#F3F6FC" && personal.SearchCornerRadius == 16,
+            "应用主题应保留本机搜索来源、入口布局和外观");
     }
 }

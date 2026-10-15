@@ -4,7 +4,7 @@
         Title="冰蓝搜索" WindowStyle="None" ResizeMode="NoResize"
         ShowInTaskbar="False" ShowActivated="False" AllowsTransparency="True"
         Background="Transparent" Height="48" MinWidth="240" MaxWidth="800">
-    <Border Background="#F01E1F24" BorderBrush="#6693C5FD" BorderThickness="1" CornerRadius="10">
+    <Border x:Name="SearchFrame" Background="#F01E1F24" BorderBrush="#6693C5FD" BorderThickness="1" CornerRadius="10">
         <Grid Margin="4,0">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="22"/>

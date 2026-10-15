@@ -158,6 +158,11 @@ public sealed partial class TopBarWindow : Window
     private EverythingSearchClient? _everythingSearch;
     private SearchWindow? _searchWindow;
     private bool _searchWindowHiddenForFullScreen;
+    private int _moduleMask = -1;
+    private SearchPresentation? _appliedSearchPresentation;
+    private Button? _searchToggleButton;
+    private System.Windows.Media.Brush _searchForeground = Brushes.White;
+    private bool _searchComposing;
 
     private Window SearchInputWindow => _searchWindow is { } window ? window : this;
     private nint SearchInputHandle => new WindowInteropHelper(SearchInputWindow).Handle;
@@ -232,7 +237,18 @@ public sealed partial class TopBarWindow : Window
             return;
         }
 
-        BuildModules();
+        var moduleMask = TopBarRules.ModuleOrder.Aggregate(0,
+            (mask, kind) => mask | (TopBarRules.IsModuleOn(_state.Modules, kind) ? 1 << (int)kind : 0));
+        if (_moduleMask != moduleMask)
+        {
+            BuildModules();
+            _moduleMask = moduleMask;
+        }
+        else if (_appliedSearchPresentation != _state.SearchPresentation && _searchHost is not null)
+        {
+            ApplySearchPresentation();
+        }
+        ApplySearchAppearance();
         ApplySurface();
         _autoHide = new DockAutoHideState();
         // The top edge is taken (a taskbar moved to the top on Windows 10): behave as
@@ -470,6 +486,8 @@ public sealed partial class TopBarWindow : Window
         _searchWindow = null;
         _searchHost = null;
         _searchWindowHiddenForFullScreen = false;
+        _searchToggleButton = null;
+        _appliedSearchPresentation = null;
         _searchBox = null;
         _searchPlaceholder = null;
         _searchFlyout = null;
@@ -671,6 +689,16 @@ public sealed partial class TopBarWindow : Window
     private void UpdateInputMethod()
     {
         var (layout, label, fullName, modeKnown) = TopBarSystemInfo.ReadInputMethod();
+        if (_searchActive && _searchBox?.IsKeyboardFocused == true)
+        {
+            // WPF's TSF state is authoritative for our own text store. The legacy
+            // IME window can keep reporting its last native mode after Shift.
+            var input = InputMethod.Current;
+            var native = input.ImeState == InputMethodState.On
+                && (input.ImeConversionMode & ImeConversionModeValues.Native) != 0;
+            label = TopBarModuleRules.DescribeInputMethod(layout, native ? 1 : 0);
+            modeKnown = true;
+        }
         if (layout != _lastInputLayout)
         {
             _lastInputLayout = layout;
@@ -1285,13 +1313,28 @@ public sealed partial class TopBarWindow : Window
             VerticalAlignment = VerticalAlignment.Center,
             Cursor = Cursors.IBeam
         };
+        // This non-activating surface borrows focus for each search session. Open the
+        // selected IME on focus instead of inheriting its closed state; Shift can
+        // still select Latin input while the box stays focused.
+        InputMethod.SetPreferredImeState(box, InputMethodState.On);
+        InputMethod.SetPreferredImeConversionMode(box, ImeConversionModeValues.Native);
         AutomationProperties.SetName(box, "顶栏搜索框");
         box.TextChanged += (_, _) =>
         {
             UpdateSearchPlaceholder();
             _searchDebounce.Stop();
-            _searchDebounce.Start();
+            if (!_searchComposing) _searchDebounce.Start();
         };
+        TextCompositionManager.AddPreviewTextInputStartHandler(box, (_, args) =>
+        {
+            if (args.TextComposition.CompositionText.Length > 0) SuspendSearchForComposition();
+        });
+        TextCompositionManager.AddPreviewTextInputUpdateHandler(box, (_, args) =>
+        {
+            if (args.TextComposition.CompositionText.Length > 0) SuspendSearchForComposition();
+            else ResumeSearchAfterComposition(box);
+        });
+        box.PreviewTextInput += (_, _) => ResumeSearchAfterComposition(box);
         box.PreviewKeyDown += OnSearchBoxKeyDown;
         box.LostKeyboardFocus += (_, _) =>
         {
@@ -1365,28 +1408,47 @@ public sealed partial class TopBarWindow : Window
         _searchHost = host;
         _searchBox = box;
         _searchPlaceholder = placeholder;
+        ApplySearchPresentation();
+    }
+
+    private void ApplySearchPresentation()
+    {
+        if (_searchHost is not { } host) return;
+        EndSearchSession();
+        CenterHost.Children.Remove(host);
+        if (_searchToggleButton is { } previousButton) CenterHost.Children.Remove(previousButton);
+        _searchToggleButton = null;
+        _searchWindowHiddenForFullScreen = false;
         if (_state.SearchPresentation == SearchPresentation.TopBar)
         {
+            var previousWindow = _searchWindow;
+            _searchWindow = null;
+            previousWindow?.DetachSearchContent();
+            previousWindow?.Shutdown();
+            host.Width = SearchBoxWidth;
+            host.Height = Math.Clamp(_state.Height - 10d, 18d, 30d);
             CenterHost.Children.Add(host);
         }
         else
         {
-            var window = new SearchWindow(_state, host, _environment.SearchLayoutChanged);
-            _searchWindow = window;
-            window.Deactivated += (_, _) =>
+            if (_searchWindow is null)
             {
-                if (ReferenceEquals(_searchWindow, window) && _searchActive)
+                var created = new SearchWindow(_state, host, _environment.SearchLayoutChanged);
+                _searchWindow = created;
+                created.Deactivated += (_, _) =>
                 {
-                    EndSearchSessionAfterInput();
-                }
-            };
-            window.Dismissed += EndSearchSession;
+                    if (ReferenceEquals(_searchWindow, created) && _searchActive) EndSearchSessionAfterInput();
+                };
+                created.Dismissed += EndSearchSession;
+            }
+            var window = _searchWindow;
             if (_state.SearchPresentation == SearchPresentation.Floating)
             {
                 window.Show();
             }
             else
             {
+                window.Hide();
                 var button = new Button
                 {
                     Content = new TextBlock { Text = GlyphSearch, FontFamily = StatusIconFont },
@@ -1395,9 +1457,11 @@ public sealed partial class TopBarWindow : Window
                 };
                 AutomationProperties.SetName(button, "展开搜索");
                 button.Click += (_, _) => Dispatcher.BeginInvoke(BeginSearchSession, DispatcherPriority.Input);
+                _searchToggleButton = button;
                 CenterHost.Children.Add(button);
             }
         }
+        _appliedSearchPresentation = _state.SearchPresentation;
         _modules[TopBarModuleKind.Search] = host;
         UpdateSearchHostWidth();
         UpdateSearchPlaceholder();
@@ -1429,6 +1493,53 @@ public sealed partial class TopBarWindow : Window
         }
     }
 
+    private void SuspendSearchForComposition()
+    {
+        if (_searchComposing) return;
+        _searchComposing = true;
+        // Phonetic text belongs to the IME. Its candidate UI must not be covered
+        // by our results, nor should every composition update query file indexes.
+        CloseSearchFlyout();
+    }
+
+    private void ResumeSearchAfterComposition(TextBox box)
+    {
+        if (!_searchComposing) return;
+        _searchComposing = false;
+        Dispatcher.BeginInvoke(() =>
+        {
+            if (!_searchActive || _searchComposing || !ReferenceEquals(_searchBox, box)) return;
+            _searchDebounce.Stop();
+            _searchDebounce.Start();
+        }, DispatcherPriority.Input);
+    }
+
+    private DockGlass SearchGlass => _searchWindow is null ? DesktopStyleRules.TopBar(_style, _state)
+        : _state.SearchFollowCardLook ? DesktopStyleRules.Dock(_style)
+        : DesktopStyleRules.CustomDock(_state.SearchSurfaceColor, _state.SearchSurfaceOpacity);
+
+    private void ApplySearchAppearance()
+    {
+        if (_searchHost is not { } host || _searchBox is not { } box) return;
+        if (_searchWindow is null) host.Height = Math.Clamp(_state.Height - 10d, 18d, 30d);
+        var glass = SearchGlass;
+        _searchForeground = _searchWindow is null ? Brushes.White : FrozenBrush(glass.RunningDot);
+        box.Foreground = box.CaretBrush = _searchForeground;
+        if (_searchPlaceholder is { } placeholder)
+        {
+            placeholder.Foreground = _searchForeground;
+            placeholder.Opacity = 0.6d;
+        }
+        if (host.Child is DockPanel panel && panel.Children[0] is TextBlock glyph) glyph.Foreground = _searchForeground;
+        _searchWindow?.ApplyAppearance(glass);
+        if (_searchFlyout?.Child is Border card)
+        {
+            card.Background = FrozenBrush(glass.Surface);
+            card.BorderBrush = FrozenBrush(glass.Border);
+            card.CornerRadius = new CornerRadius(_searchWindow is null ? 10d : _state.SearchCornerRadius);
+        }
+    }
+
     // One shot per edit: the timer itself repeats until stopped.
     private void OnSearchDebounceTick()
     {
@@ -1445,7 +1556,7 @@ public sealed partial class TopBarWindow : Window
 
     private async void RunSearchNow()
     {
-        if (_closing || _searchBox is not { } box)
+        if (_closing || _searchComposing || _searchBox is not { } box)
         {
             return;
         }
@@ -1524,7 +1635,7 @@ public sealed partial class TopBarWindow : Window
             rows.Children.Add(new TextBlock
             {
                 Text = $"没有与“{query}”匹配的结果",
-                Foreground = Brushes.White,
+                Foreground = _searchForeground,
                 Opacity = 0.65,
                 FontSize = 12,
                 Margin = new Thickness(12, 6, 12, 6)
@@ -1545,7 +1656,7 @@ public sealed partial class TopBarWindow : Window
         {
             rows.Children.Add(new TextBlock
             {
-                Text = scope, Foreground = Brushes.White, Opacity = 0.6, FontSize = 11,
+                Text = scope, Foreground = _searchForeground, Opacity = 0.6, FontSize = 11,
                 Margin = new Thickness(12, 6, 12, 2), IsHitTestVisible = false
             });
         }
@@ -1563,7 +1674,7 @@ public sealed partial class TopBarWindow : Window
         var name = new TextBlock
         {
             Text = candidate.DisplayName,
-            Foreground = Brushes.White,
+            Foreground = _searchForeground,
             FontSize = 13,
             TextTrimming = TextTrimming.CharacterEllipsis,
             VerticalAlignment = VerticalAlignment.Center
@@ -1571,12 +1682,12 @@ public sealed partial class TopBarWindow : Window
         var detail = new TextBlock
         {
             Text = $"{KindLabel(candidate.Kind)} · {candidate.Path}",
-            Foreground = new SolidColorBrush(Color.FromArgb(140, 255, 255, 255)),
+            Foreground = _searchForeground,
+            Opacity = 0.6d,
             FontSize = 11,
             TextTrimming = TextTrimming.CharacterEllipsis,
             VerticalAlignment = VerticalAlignment.Center
         };
-        detail.Foreground.Freeze();
         var texts = new DockPanel { VerticalAlignment = VerticalAlignment.Center };
         DockPanel.SetDock(name, System.Windows.Controls.Dock.Top);
         texts.Children.Add(name);
@@ -1660,6 +1771,7 @@ public sealed partial class TopBarWindow : Window
         // text store, which fail-fasts the whole process.
         if (args.Key == Key.ImeProcessed)
         {
+            SuspendSearchForComposition();
             return;
         }
 
@@ -1745,14 +1857,14 @@ public sealed partial class TopBarWindow : Window
 
         var rows = new StackPanel();
         var flyoutWidth = _searchWindow?.ActualWidth > 0 ? _searchWindow.ActualWidth : SearchFlyoutWidth;
-        var glass = DesktopStyleRules.TopBar(_style, _state);
+        var glass = SearchGlass;
         var card = new Border
         {
             Width = flyoutWidth,
             Background = FrozenBrush(glass.Surface),
             BorderBrush = FrozenBrush(glass.Border),
             BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(10),
+            CornerRadius = new CornerRadius(_searchWindow is null ? 10d : _state.SearchCornerRadius),
             Padding = new Thickness(0, 6, 0, 6),
             Child = new ScrollViewer
             {
@@ -1881,6 +1993,13 @@ public sealed partial class TopBarWindow : Window
         if (_searchBox is { } box)
         {
             box.Focus();
+            // WPF can retain logical focus when this HWND becomes non-activating;
+            // reopening then raises no focus event to apply PreferredImeState.
+            if (box.IsKeyboardFocused)
+            {
+                InputMethod.Current.ImeState = InputMethodState.On;
+                InputMethod.Current.ImeConversionMode = ImeConversionModeValues.Native;
+            }
             box.CaretIndex = box.Text.Length;
         }
         // The fast tick keeps the outside-watch prompt while the flyout can be open.
@@ -1914,6 +2033,7 @@ public sealed partial class TopBarWindow : Window
     /// <summary>Clears the box, closes the flyout and returns the bar to never-activating.</summary>
     internal void EndSearchSession()
     {
+        _searchComposing = false;
         if (!_searchActive)
         {
             if (_searchBox is { } box)
@@ -2118,7 +2238,7 @@ public sealed partial class TopBarWindow : Window
             var owner = _searchSessionOwner;
             return owner is null || !owner._searchActive || owner._closing
                 ? (0, 0)
-                : (owner._handle, owner._searchPreviousForeground);
+                : (owner.SearchInputHandle, owner._searchPreviousForeground);
         }
     }
 

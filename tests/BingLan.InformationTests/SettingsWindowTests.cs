@@ -251,6 +251,31 @@ internal static class SettingsWindowTests
             Require<ComboBox>(window, "SearchPresentationComboBox").SelectedIndex = 1;
             Pump();
             Assert(topBar.SearchPresentation == SearchPresentation.Floating, "独立搜索入口应写入状态");
+            var look = Require<ComboBox>(window, "SearchLookComboBox");
+            look.SelectedIndex = 1;
+            Require<Slider>(window, "SearchOpacitySlider").Value = 0.7;
+            Require<Slider>(window, "SearchCornerSlider").Value = 16;
+            Pump();
+            Assert(topBar.SearchSurfaceColor == "#F3F6FC" && topBar.SearchSurfaceOpacity == 0.7 && topBar.SearchCornerRadius == 16,
+                "搜索框外观选项应写入实际独立设置");
+            look.SelectedIndex = 2;
+            Pump();
+            Assert(topBar.SearchFollowCardLook && !Require<Slider>(window, "SearchOpacitySlider").IsEnabled,
+                "跟随卡片时应使用共享材质，并停用自定义透明度");
+            var moduleGrid = Require<System.Windows.Controls.Primitives.UniformGrid>(window, "TopBarModulesPanel");
+            foreach (var width in new[] { 900d, 1168d, 1600d })
+            {
+                window.Width = width;
+                Pump();
+                var cells = moduleGrid.Children.OfType<CheckBox>().ToArray();
+                Assert(cells.Length == 10 && moduleGrid.Columns is >= 2 and <= 5 && cells.All(cell => cell.ActualWidth >= 110),
+                    "窄窗与宽窗中十个模块应按等宽列排布，保留文字空间");
+                Assert(moduleGrid.Parent is Border { Padding.Left: >= 16 }, "模块区应与分组边框保持内边距");
+                var first = cells[0].TranslatePoint(new Point(0, 0), moduleGrid);
+                var nextRow = cells[moduleGrid.Columns].TranslatePoint(new Point(0, 0), moduleGrid);
+                Assert(Math.Abs(first.X - nextRow.X) < 1 && nextRow.Y > first.Y,
+                    "模块换行后的列起点必须对齐");
+            }
         }
         finally
         {

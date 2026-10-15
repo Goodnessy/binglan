@@ -99,6 +99,11 @@ public sealed class TopBarState
     public double SearchWindowWidth { get; set; } = 420d;
 
     public WindowPlacement SearchWindowPlacement { get; set; } = new();
+
+    public bool SearchFollowCardLook { get; set; }
+    public string SearchSurfaceColor { get; set; } = DefaultSurfaceColor;
+    public double SearchSurfaceOpacity { get; set; } = 0.94d;
+    public double SearchCornerRadius { get; set; } = 10d;
 }
 
 public static class TopBarRules
@@ -142,6 +147,9 @@ public static class TopBarRules
     {
         ArgumentNullException.ThrowIfNull(state);
         state.Modules ??= new TopBarModuleSwitches();
+        state.SearchSurfaceColor = WidgetAppearanceRules.CoerceColorOrDefault(state.SearchSurfaceColor, TopBarState.DefaultSurfaceColor);
+        state.SearchSurfaceOpacity = double.IsFinite(state.SearchSurfaceOpacity) ? Math.Clamp(state.SearchSurfaceOpacity, 0.05d, 1d) : 0.94d;
+        state.SearchCornerRadius = double.IsFinite(state.SearchCornerRadius) ? Math.Clamp(state.SearchCornerRadius, 0d, 24d) : 10d;
         state.SearchWindowPlacement ??= new WindowPlacement();
         if (!double.IsFinite(state.SearchWindowPlacement.Left))
         {

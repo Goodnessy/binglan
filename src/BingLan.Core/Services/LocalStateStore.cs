@@ -481,6 +481,11 @@ public sealed class LocalStateStore
             // Search sources and presentation use their machine-local defaults.
             state.SchemaVersion = 30;
         }
+        if (state.SchemaVersion < 31)
+        {
+            // Independent search appearance uses local defaults, preserving its layout.
+            state.SchemaVersion = 31;
+        }
         state.Updates ??= new UpdateState();
         state.QuickPlaces = QuickPlaceRules.Normalize(state.QuickPlaces);
         state.DismissedDesktopCategories = (state.DismissedDesktopCategories ?? [])

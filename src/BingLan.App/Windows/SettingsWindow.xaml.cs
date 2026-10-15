@@ -64,6 +64,8 @@ public partial class SettingsWindow : Window
     private bool _loadingStyle;
     private bool _loadingTopBar;
     private bool _loadingTopBarLook;
+    private bool _loadingSearchAppearance;
+    private bool _topBarApplyQueued;
 
     public SettingsWindow(
         CityLookupService citySearchService,
@@ -1742,6 +1744,7 @@ public partial class SettingsWindow : Window
             TopBarSearchCheckBox.IsChecked = state.Modules.Search;
             TopBarEverythingCheckBox.IsChecked = state.UseEverything;
             SearchPresentationComboBox.SelectedIndex = (int)state.SearchPresentation;
+            LoadSearchAppearance();
             LoadTopBarSearchHotkey();
 
             TopBarMonitorComboBox.Items.Clear();
@@ -1809,7 +1812,85 @@ public partial class SettingsWindow : Window
             return;
         }
         state.SearchPresentation = (SearchPresentation)SearchPresentationComboBox.SelectedIndex;
+        LoadSearchAppearance();
         ApplyTopBarChange("已应用搜索入口");
+    }
+
+    private void TopBarModules_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (sender is System.Windows.Controls.Primitives.UniformGrid grid)
+            grid.Columns = Math.Clamp((int)(grid.ActualWidth / 150d), 2, 5);
+    }
+
+    private void LoadSearchAppearance()
+    {
+        if (_topBarState is not { } state || SearchLookComboBox is null) return;
+        _loadingSearchAppearance = true;
+        try
+        {
+            SearchAppearancePanel.IsEnabled = state.SearchPresentation != SearchPresentation.TopBar;
+            SearchLookComboBox.SelectedIndex = state.SearchFollowCardLook ? 2
+                : state.SearchSurfaceColor == TopBarState.DefaultSurfaceColor ? 0
+                : state.SearchSurfaceColor == "#F3F6FC" ? 1 : 3;
+            SearchOpacitySlider.Value = state.SearchSurfaceOpacity;
+            SearchCornerSlider.Value = state.SearchCornerRadius;
+            SearchOpacitySlider.IsEnabled = SearchColorPreview.IsEnabled = !state.SearchFollowCardLook;
+            SearchOpacityText.Text = $"{state.SearchSurfaceOpacity * 100:0}%";
+            SearchCornerText.Text = $"{state.SearchCornerRadius:0} DIP";
+            var brush = new System.Windows.Media.SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(state.SearchSurfaceColor));
+            brush.Freeze();
+            SearchColorPreview.Background = brush;
+        }
+        finally { _loadingSearchAppearance = false; }
+    }
+
+    private void SearchLook_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (_loadingSearchAppearance || _loadingTopBar || _topBarState is not { } state || SearchLookComboBox.SelectedIndex < 0) return;
+        state.SearchFollowCardLook = SearchLookComboBox.SelectedIndex == 2;
+        if (SearchLookComboBox.SelectedIndex is 0 or 1)
+        {
+            state.SearchSurfaceColor = SearchLookComboBox.SelectedIndex == 0 ? TopBarState.DefaultSurfaceColor : "#F3F6FC";
+            state.SearchSurfaceOpacity = 0.94d;
+        }
+        LoadSearchAppearance();
+        ApplyTopBarChange("已调整搜索框配色");
+    }
+
+    private void SearchLook_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (_loadingSearchAppearance || _loadingTopBar || _topBarState is not { } state || SearchCornerSlider is null) return;
+        state.SearchSurfaceOpacity = SearchOpacitySlider.Value;
+        state.SearchCornerRadius = SearchCornerSlider.Value;
+        SearchOpacityText.Text = $"{state.SearchSurfaceOpacity * 100:0}%";
+        SearchCornerText.Text = $"{state.SearchCornerRadius:0} DIP";
+        ApplyTopBarChange("已调整搜索框外观");
+    }
+
+    private void SearchLook_Reset(object sender, RoutedEventArgs e)
+    {
+        if (_topBarState is not { } state) return;
+        state.SearchFollowCardLook = false;
+        state.SearchSurfaceColor = TopBarState.DefaultSurfaceColor;
+        state.SearchSurfaceOpacity = 0.94d;
+        state.SearchCornerRadius = 10d;
+        LoadSearchAppearance();
+        ApplyTopBarChange("已恢复搜索框默认外观");
+    }
+
+    private void SearchLook_Color(object sender, RoutedEventArgs e)
+    {
+        if (_topBarState is not { } state) return;
+        var current = (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(state.SearchSurfaceColor);
+        using var dialog = new System.Windows.Forms.ColorDialog
+        {
+            Color = System.Drawing.Color.FromArgb(current.R, current.G, current.B), FullOpen = true, AnyColor = true
+        };
+        if (dialog.ShowDialog() != System.Windows.Forms.DialogResult.OK) return;
+        state.SearchFollowCardLook = false;
+        state.SearchSurfaceColor = $"#{dialog.Color.R:X2}{dialog.Color.G:X2}{dialog.Color.B:X2}";
+        LoadSearchAppearance();
+        ApplyTopBarChange("已调整搜索框底色");
     }
 
     /// <summary>
@@ -2055,12 +2136,20 @@ public partial class SettingsWindow : Window
 
     private void ApplyTopBarChange(string status)
     {
-        _applyTopBar?.Invoke();
         if (TopBarStatusText is not null)
         {
             TopBarStatusText.Text = status;
         }
-        LoadDesktopMode();
+        // Let the current input/selection message finish, and apply only the latest
+        // slider or preset value if several events arrived in the same dispatcher turn.
+        if (_topBarApplyQueued) return;
+        _topBarApplyQueued = true;
+        Dispatcher.BeginInvoke(() =>
+        {
+            _topBarApplyQueued = false;
+            _applyTopBar?.Invoke();
+            LoadDesktopMode();
+        }, DispatcherPriority.Background);
     }
 
     private void QuietTaskbarFlash_Click(object sender, RoutedEventArgs e)

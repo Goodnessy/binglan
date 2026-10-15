@@ -1275,7 +1275,7 @@ public sealed class WidgetCoordinator : IDisposable
     {
         _topBar.Apply();
         UpdateSamplingMode();
-        SaveNow();
+        ScheduleSave();
     }
 
     private string CleanDesktopNotice() =>
