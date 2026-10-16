@@ -139,6 +139,25 @@ public static class TopBarSearchTests
             .ToArray();
         Assert(TopBarSearchRules.Search(many, "记事本").Count == TopBarSearchRules.MaxResults,
             "结果条数封顶");
+
+        // Stage-2 supplemental results preserve stage-1 ordering, deduplicate paths, and append below.
+        var stage1 = new[] { report };
+        var indexedHigherScore = new TopBarSearchCandidate(
+            TopBarSearchItemKind.App, "报告助手", "报告助手.exe", @"D:\Apps\报告助手.exe");
+        var duplicateReport = new TopBarSearchCandidate(
+            TopBarSearchItemKind.File, "季度报告", "季度报告.docx", @"c:\users\a\desktop\季度报告.docx");
+        var merged = TopBarSearchRules.AppendSupplementalResults(
+            stage1,
+            new[] { duplicateReport, indexedHigherScore },
+            "报告");
+        Assert(merged.Count == 2 && merged[0].Path == report.Path && merged[1].Path == indexedHigherScore.Path,
+            "二阶段索引补充结果应保持首阶段结果原位并去重追加在下方");
+
+        // Long paths compact middle segments while keeping root and parent directory visible.
+        var longPath = @"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\WeChat\微信.lnk";
+        var formatted = TopBarSearchRules.FormatLocation(longPath, 42);
+        Assert(formatted.Contains("…") && formatted.EndsWith(@"WeChat\微信.lnk", StringComparison.Ordinal),
+            "长路径应从中间折叠并保留父目录与文件名");
     }
 
     private static void TestHotkeyParsing()

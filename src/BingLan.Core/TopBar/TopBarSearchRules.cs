@@ -1,3 +1,5 @@
+using System.Runtime.CompilerServices;
+
 namespace BingLan.Core.TopBar;
 
 public enum TopBarSearchItemKind
@@ -44,6 +46,13 @@ public static class TopBarSearchRules
     private static readonly char[] QuerySeparators = [' ', '　', '\t'];
     private static readonly char[] WordSeparators =
         [' ', '\t', '.', '_', '-', '(', ')', '[', ']', '+', '&', '，', '、', '·'];
+    private static readonly char[] PathSeparators = ['\\', '/'];
+    private static readonly ConditionalWeakTable<TopBarSearchCandidate, CachedCandidateKeys> KeyCache = new();
+
+    private sealed record CachedCandidateKeys(
+        string Name,
+        string FileName,
+        string Initials);
 
     private readonly record struct CandidateKeys(
         string Name,
@@ -59,7 +68,87 @@ public static class TopBarSearchRules
     /// </summary>
     public static IReadOnlyList<TopBarSearchCandidate> Search(
         IEnumerable<TopBarSearchCandidate> candidates,
+        string query) =>
+        SearchCore(candidates, query, allowFuzzy: true);
+
+    /// <summary>
+    /// Keeps already-rendered stage-1 results in their exact order and appends ranked,
+    /// deduplicated stage-2 index matches below them up to <see cref="MaxResults"/>.
+    /// </summary>
+    public static IReadOnlyList<TopBarSearchCandidate> AppendSupplementalResults(
+        IReadOnlyList<TopBarSearchCandidate> primaryResults,
+        IEnumerable<TopBarSearchCandidate> supplementalCandidates,
         string query)
+    {
+        if (primaryResults.Count >= MaxResults)
+        {
+            return primaryResults;
+        }
+
+        var seenPaths = new HashSet<string>(primaryResults.Select(item => item.Path), StringComparer.OrdinalIgnoreCase);
+        var novelCandidates = new List<TopBarSearchCandidate>();
+        foreach (var candidate in supplementalCandidates)
+        {
+            if (seenPaths.Add(candidate.Path))
+            {
+                novelCandidates.Add(candidate);
+            }
+        }
+
+        if (novelCandidates.Count == 0)
+        {
+            return primaryResults;
+        }
+
+        var appended = SearchCore(novelCandidates, query, allowFuzzy: primaryResults.Count == 0);
+        if (appended.Count == 0)
+        {
+            return primaryResults;
+        }
+
+        var merged = new List<TopBarSearchCandidate>(Math.Min(MaxResults, primaryResults.Count + appended.Count));
+        merged.AddRange(primaryResults);
+        var remaining = MaxResults - merged.Count;
+        for (var index = 0; index < appended.Count && index < remaining; index++)
+        {
+            merged.Add(appended[index]);
+        }
+        return merged;
+    }
+
+    /// <summary>
+    /// Compacts long file paths from the middle so both the root/drive and the immediate
+    /// parent folder remain visible instead of being clipped by tail ellipsis.
+    /// </summary>
+    public static string FormatLocation(string path, int maxLength = 52)
+    {
+        if (string.IsNullOrEmpty(path) || path.Length <= maxLength)
+        {
+            return path;
+        }
+
+        var parts = path.Split(PathSeparators, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length <= 3)
+        {
+            return path;
+        }
+
+        var tail = string.Join('\\', parts[^2], parts[^1]);
+        var head = parts[0] + '\\' + parts[1];
+        var candidate = head + @"\…\" + tail;
+        if (candidate.Length <= maxLength)
+        {
+            return candidate;
+        }
+
+        var shortCandidate = parts[0] + @"\…\" + tail;
+        return shortCandidate.Length <= path.Length ? shortCandidate : path;
+    }
+
+    private static IReadOnlyList<TopBarSearchCandidate> SearchCore(
+        IEnumerable<TopBarSearchCandidate> candidates,
+        string query,
+        bool allowFuzzy)
     {
         var tokens = query.Split(QuerySeparators, StringSplitOptions.RemoveEmptyEntries)
             .Select(token => token.Trim().ToLowerInvariant())
@@ -73,14 +162,12 @@ public static class TopBarSearchRules
         // The fallback may need a second pass, including for a one-shot enumerable.
         var source = candidates as IReadOnlyList<TopBarSearchCandidate> ?? candidates.ToArray();
         var scored = new List<(int Score, TopBarSearchCandidate Candidate)>();
-        for (var pass = 0; pass < 2; pass++)
+        var maxPasses = allowFuzzy ? 2 : 1;
+        for (var pass = 0; pass < maxPasses; pass++)
         {
             foreach (var candidate in source)
             {
-                var keys = new CandidateKeys(
-                    candidate.DisplayName.ToLowerInvariant(),
-                    candidate.FullFileName.ToLowerInvariant(),
-                    PinyinInitials(candidate.DisplayName));
+                var keys = GetCandidateKeys(candidate);
                 var total = 0;
                 foreach (var token in tokens)
                 {
@@ -119,6 +206,17 @@ public static class TopBarSearchRules
             .Take(MaxResults)
             .Select(entry => entry.Candidate)
             .ToArray();
+    }
+
+    private static CandidateKeys GetCandidateKeys(TopBarSearchCandidate candidate)
+    {
+        var cached = KeyCache.GetValue(
+            candidate,
+            static item => new CachedCandidateKeys(
+                item.DisplayName.ToLowerInvariant(),
+                item.FullFileName.ToLowerInvariant(),
+                PinyinInitials(item.DisplayName)));
+        return new CandidateKeys(cached.Name, cached.FileName, cached.Initials);
     }
 
     private static int TokenScore(CandidateKeys keys, string token)

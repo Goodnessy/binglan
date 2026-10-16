@@ -18,6 +18,8 @@ internal static class WindowsIndexSearchClient
     // A slow provider may outlive the UI wait. Keep at most one native query alive;
     // a separate search service is warranted only if measured demand exceeds this limit.
     private static readonly SemaphoreSlim QueryGate = new(1, 1);
+    private static readonly Lazy<Type?> ConnectionType = new(() => Type.GetTypeFromProgID("ADODB.Connection"));
+    private static readonly Lazy<Type?> RecordsetType = new(() => Type.GetTypeFromProgID("ADODB.Recordset"));
 
     internal static async Task<WindowsIndexSearchResult> SearchAsync(string query, CancellationToken cancellationToken)
     {
@@ -26,7 +28,7 @@ internal static class WindowsIndexSearchClient
         {
             return WindowsIndexSearchResult.Unavailable;
         }
-        if (!await QueryGate.WaitAsync(TimeSpan.FromMilliseconds(400), cancellationToken))
+        if (!await QueryGate.WaitAsync(TimeSpan.FromMilliseconds(500), cancellationToken))
         {
             return WindowsIndexSearchResult.Unavailable;
         }
@@ -37,7 +39,7 @@ internal static class WindowsIndexSearchClient
         });
         try
         {
-            return await work.WaitAsync(TimeSpan.FromMilliseconds(1500), cancellationToken);
+            return await work.WaitAsync(TimeSpan.FromMilliseconds(900), cancellationToken);
         }
         catch (TimeoutException)
         {
@@ -56,6 +58,28 @@ internal static class WindowsIndexSearchClient
             + string.Join(" AND ", conditions);
     }
 
+    /// <summary>
+    /// Short ASCII queries (such as 2–3 letter pinyin initials) are already covered by
+    /// the indexed word-prefix query; falling back to an unindexed <c>LIKE '%xx%'</c>
+    /// scan would sweep the entire catalog without matching Chinese filenames anyway.
+    /// </summary>
+    internal static bool ShouldFallbackToSubstringScan(string query)
+    {
+        var match = Regex.Match(query, @"[\p{L}\p{Nd}]{2,}");
+        if (!match.Success)
+        {
+            return false;
+        }
+        foreach (var ch in query)
+        {
+            if (!char.IsAscii(ch))
+            {
+                return true;
+            }
+        }
+        return match.Value.Length >= 4;
+    }
+
     private static WindowsIndexSearchResult ReadIndex(string query, CancellationToken cancellationToken)
     {
         object? connectionObject = null;
@@ -63,8 +87,8 @@ internal static class WindowsIndexSearchClient
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var connectionType = Type.GetTypeFromProgID("ADODB.Connection");
-            var rowsType = Type.GetTypeFromProgID("ADODB.Recordset");
+            var connectionType = ConnectionType.Value;
+            var rowsType = RecordsetType.Value;
             if (connectionType is null || rowsType is null)
             {
                 return WindowsIndexSearchResult.Unavailable;
@@ -81,8 +105,8 @@ internal static class WindowsIndexSearchClient
             rows.Open(CreateQuery(query), connection, 0, 1, 1);
             cancellationToken.ThrowIfCancellationRequested();
             // A filename word-prefix narrows the property-store scan. If it finds
-            // nothing, try bounded substring matching for mid-word input.
-            if (rows.EOF && Regex.IsMatch(query, @"[\p{L}\p{Nd}]{2,}"))
+            // nothing, try bounded substring matching only when mid-word input is plausible.
+            if (rows.EOF && ShouldFallbackToSubstringScan(query))
             {
                 rows.Close();
                 rows.Open(CreateQuery(query, useWordPrefix: false), connection, 0, 1, 1);

@@ -676,6 +676,77 @@ internal static class TopBarWindowTests
                 "回车应打开选中的第一条结果");
             Assert(!bar.SearchSessionActive && box.Text == string.Empty,
                 "回车打开后应结束会话并清空输入框");
+
+            // Regression checks: non-wrapping arrow keys, stationary mouse hover,
+            // incremental stage-2 row append preserving selection, cross-row press/release,
+            // and flyout gap right-click not bubbling to TopBarWindow.ContextMenu.
+            bar.BeginSearchSession();
+            pump();
+            var render = typeof(TopBarWindow).GetMethod("RenderSearchResults",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+            var stage1 = SearchSource().Take(2).ToList();
+            render.Invoke(bar, [stage1, "测试", "正在查询文件索引…"]);
+            pump();
+            Assert(bar.SearchSelectedIndex == 0, "首阶段渲染默认选中第 0 行");
+            PressKey(box, System.Windows.Input.Key.Up);
+            pump();
+            Assert(bar.SearchSelectedIndex == 0, "在首行按上方向键不应首尾循环到末行");
+            PressKey(box, System.Windows.Input.Key.Down);
+            pump();
+            Assert(bar.SearchSelectedIndex == 1, "按下方向键应移动到第 1 行");
+            PressKey(box, System.Windows.Input.Key.Down);
+            pump();
+            Assert(bar.SearchSelectedIndex == 1, "在末行按下方向键不应首尾循环回首行");
+
+            var rowsBefore = LogicalDescendants(bar.SearchFlyout?.Child).OfType<Border>().Where(r => r.Tag is int).ToList();
+            // Stationary mouse enter on row 0 must not steal keyboard selection from row 1.
+            rowsBefore[0].RaiseEvent(new System.Windows.Input.MouseEventArgs(
+                System.Windows.Input.Mouse.PrimaryDevice, 0)
+            {
+                RoutedEvent = UIElement.MouseEnterEvent
+            });
+            pump();
+            Assert(bar.SearchSelectedIndex == 1, "鼠标未发生位移时悬停事件不应抢走键盘选中项");
+
+            // Stage-2 append keeps existing row Border instances and preserves selected index 1.
+            var stage2 = SearchSource().Take(3).ToList();
+            render.Invoke(bar, [stage2, "测试", "桌面与应用 · Windows 已索引文件"]);
+            pump();
+            var rowsAfter = LogicalDescendants(bar.SearchFlyout?.Child).OfType<Border>().Where(r => r.Tag is int).ToList();
+            Assert(rowsAfter.Count == 3
+                && ReferenceEquals(rowsBefore[0], rowsAfter[0])
+                && ReferenceEquals(rowsBefore[1], rowsAfter[1])
+                && bar.SearchSelectedIndex == 1,
+                "二阶段追加文件结果应复用已有行控件并保持当前选中项不跳变");
+
+            // Pressing on row 0 and releasing on row 1 must not open row 1.
+            var openedBeforeCrossClick = environment.OpenedTargets.Count;
+            rowsAfter[0].RaiseEvent(new System.Windows.Input.MouseButtonEventArgs(
+                System.Windows.Input.Mouse.PrimaryDevice, 0, System.Windows.Input.MouseButton.Left)
+            {
+                RoutedEvent = UIElement.MouseLeftButtonDownEvent
+            });
+            rowsAfter[1].RaiseEvent(new System.Windows.Input.MouseButtonEventArgs(
+                System.Windows.Input.Mouse.PrimaryDevice, 0, System.Windows.Input.MouseButton.Left)
+            {
+                RoutedEvent = UIElement.MouseLeftButtonUpEvent
+            });
+            pump();
+            Assert(environment.OpenedTargets.Count == openedBeforeCrossClick,
+                "跨行按下与松开不应误触打开结果");
+
+            // Right-clicking on the flyout card gap/footer must be handled and never open TopBarWindow.ContextMenu.
+            var backing = (FrameworkElement)bar.SearchFlyout!.Child;
+            var card = backing as Border ?? ((Grid)backing).Children.OfType<Border>().Single();
+            var rightUpArgs = new System.Windows.Input.MouseButtonEventArgs(
+                System.Windows.Input.Mouse.PrimaryDevice, 0, System.Windows.Input.MouseButton.Right)
+            {
+                RoutedEvent = UIElement.MouseRightButtonUpEvent
+            };
+            card.RaiseEvent(rightUpArgs);
+            pump();
+            Assert(rightUpArgs.Handled && bar.ContextMenu?.IsOpen != true,
+                "在搜索弹层缝隙或底部右键不应冒泡弹出顶栏退出菜单");
         }
         finally
         {
@@ -1454,6 +1525,10 @@ internal static class TopBarWindowTests
             "系统索引应先用文件名词前缀缩小范围，再在空结果时回退包含查询");
         Assert(WindowsIndexSearchClient.CreateQuery("content:hello").Contains("System.FileName LIKE '%content:hello%'", StringComparison.Ordinal),
             "系统索引不应把用户输入解释为内容搜索");
+        Assert(!WindowsIndexSearchClient.ShouldFallbackToSubstringScan("wx")
+            && WindowsIndexSearchClient.ShouldFallbackToSubstringScan("报告")
+            && WindowsIndexSearchClient.ShouldFallbackToSubstringScan("report"),
+            "短 ASCII 拼音首字母查询不应触发全表无索引子串回退扫描");
         var parsed = WindowsIndexSearchClient.ParseRows(new object[,]
         {
             { "file:///D:/%E8%B5%84%E6%96%99/%E5%B9%B4%E5%BA%A6%E6%8A%A5%E5%91%8A.txt", "file:///D:/%E8%B5%84%E6%96%99", "relative.txt",

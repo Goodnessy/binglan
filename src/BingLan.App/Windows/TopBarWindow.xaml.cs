@@ -141,8 +141,9 @@ public sealed partial class TopBarWindow : Window
     private const double SearchFlyoutWidth = 440d;
     private const int SearchFlyoutVisibleRows = 8;
     private const int SearchHotkeyId = 0x5E41;
-    private static readonly TimeSpan SearchDebounceInterval = TimeSpan.FromMilliseconds(150);
+    private static readonly TimeSpan SearchDebounceInterval = TimeSpan.FromMilliseconds(220);
     private static readonly string SearchSelectionBrushColor = "#7AB4ED";
+    private static readonly SolidColorBrush SearchRowSelectedBrush = CreateFrozenColorBrush(Color.FromArgb(70, 122, 180, 237));
 
     private Border? _searchHost;
     private TextBox? _searchBox;
@@ -158,6 +159,8 @@ public sealed partial class TopBarWindow : Window
     private List<TopBarSearchCandidate> _searchResults = [];
     private readonly List<Border> _searchRowBorders = [];
     private int _searchSelected;
+    private int _pressedSearchRowIndex = -1;
+    private DockNativeMethods.NativePoint _lastSearchMousePoint;
     private int _searchGeneration;
     private CancellationTokenSource? _searchCancellation;
     private EverythingSearchClient? _everythingSearch;
@@ -1350,6 +1353,7 @@ public sealed partial class TopBarWindow : Window
         });
         box.PreviewTextInput += (_, _) => ResumeSearchAfterComposition(box);
         box.PreviewKeyDown += OnSearchBoxKeyDown;
+        box.ContextMenuOpening += OnSearchBoxContextMenuOpening;
         box.LostKeyboardFocus += (_, _) =>
         {
             // Focusing any other module (or another app) ends the session; the popup's
@@ -1603,7 +1607,7 @@ public sealed partial class TopBarWindow : Window
         var useEverything = _state.UseEverything;
         try
         {
-            var basicResults = await Task.Run(() => TopBarSearchRules.Search(candidates, query), token);
+            var basicResults = TopBarSearchRules.Search(candidates, query);
             if (_closing || token.IsCancellationRequested || generation != _searchGeneration || _searchBox?.Text != query) return;
             RenderSearchResults([.. basicResults], query, "正在查询文件索引…");
             var files = EverythingSearchResult.Unavailable;
@@ -1614,10 +1618,13 @@ public sealed partial class TopBarWindow : Window
             }
             var windows = files.Available ? WindowsIndexSearchResult.Unavailable
                 : await WindowsIndexSearchClient.SearchAsync(query, token);
-            // Only bounded replies join the basic candidates; desktop paths win duplicates.
-            var results = await Task.Run(() => TopBarSearchRules.Search(
-                candidates.Concat(files.Candidates).Concat(windows.Candidates)
-                    .DistinctBy(candidate => candidate.Path, StringComparer.OrdinalIgnoreCase), query), token);
+            // Keep stage-1 rows in their exact order and append deduplicated index matches below them.
+            var results = await Task.Run(
+                () => TopBarSearchRules.AppendSupplementalResults(
+                    basicResults,
+                    files.Candidates.Concat(windows.Candidates),
+                    query),
+                token);
             // Keep the pressed result alive through MouseUp; opening it cancels this query.
             while (Mouse.LeftButton == MouseButtonState.Pressed) await Task.Delay(30, token);
             if (_closing || token.IsCancellationRequested || generation != _searchGeneration || _searchBox?.Text != query)
@@ -1647,16 +1654,61 @@ public sealed partial class TopBarWindow : Window
             return;
         }
 
-        if (_searchFlyout?.IsOpen == true && _searchRows is not null
-            && _searchRenderedQuery == query && _searchResults.SequenceEqual(results))
+        DockNativeMethods.GetCursorPos(out _lastSearchMousePoint);
+        if (_searchFlyout?.IsOpen == true && _searchRows is { } existingRows && _searchRenderedQuery == query)
         {
-            if (_searchScope is { } footer) footer.Text = scope ?? string.Empty;
-            return;
+            if (_searchResults.SequenceEqual(results))
+            {
+                if (_searchScope is { } footer) footer.Text = scope ?? string.Empty;
+                return;
+            }
+
+            // Stage-2 supplemental results preserve the leading stage-1 rows in place:
+            // append only the new rows without rebuilding existing rows or resetting selection.
+            if (_searchResults.Count > 0
+                && results.Count >= _searchResults.Count
+                && results.Take(_searchResults.Count).SequenceEqual(_searchResults))
+            {
+                var previousCount = _searchResults.Count;
+                _searchResults = results;
+                if (_searchScope is { } oldFooter)
+                {
+                    existingRows.Children.Remove(oldFooter);
+                }
+                for (var index = previousCount; index < results.Count; index++)
+                {
+                    var row = CreateSearchRow(results[index], index);
+                    _searchRowBorders.Add(row);
+                    existingRows.Children.Add(row);
+                }
+                _searchScope ??= new TextBlock
+                {
+                    Foreground = _searchForeground, Opacity = 0.6, FontSize = 11,
+                    Margin = new Thickness(12, 6, 12, 2), IsHitTestVisible = false
+                };
+                _searchScope.Text = scope ?? string.Empty;
+                existingRows.Children.Add(_searchScope);
+                UpdateSearchSelection();
+                LoadSearchIcons(results);
+                return;
+            }
+        }
+
+        var preservedIndex = 0;
+        if (_searchRenderedQuery == query && (uint)_searchSelected < (uint)_searchResults.Count)
+        {
+            var selectedPath = _searchResults[_searchSelected].Path;
+            var matchIndex = results.FindIndex(item => string.Equals(item.Path, selectedPath, StringComparison.OrdinalIgnoreCase));
+            if (matchIndex >= 0)
+            {
+                preservedIndex = matchIndex;
+            }
         }
 
         _searchResults = results;
         _searchRenderedQuery = query;
-        _searchSelected = 0;
+        _searchSelected = preservedIndex;
+        _pressedSearchRowIndex = -1;
         EnsureSearchFlyout();
         // The popup's IsOpen can read false for a moment right after being set: the
         // actual open completes on the next layout pass. The rows build regardless;
@@ -1704,6 +1756,7 @@ public sealed partial class TopBarWindow : Window
         {
             Width = 22,
             Height = 22,
+            Margin = new Thickness(0, 0, 10, 0),
             VerticalAlignment = VerticalAlignment.Center,
             Source = _searchIconCache.GetValueOrDefault(candidate.Path)
         };
@@ -1717,7 +1770,7 @@ public sealed partial class TopBarWindow : Window
         };
         var detail = new TextBlock
         {
-            Text = $"{KindLabel(candidate.Kind)} · {candidate.Path}",
+            Text = $"{KindLabel(candidate.Kind)} · {TopBarSearchRules.FormatLocation(candidate.Path)}",
             Foreground = _searchForeground,
             Opacity = 0.6d,
             FontSize = 11,
@@ -1747,43 +1800,71 @@ public sealed partial class TopBarWindow : Window
         };
         DockPanel.SetDock(icon, System.Windows.Controls.Dock.Left);
         // Rows are not focusable: keyboard focus stays in the box, which drives the
-        // selection, and one click opens exactly one result. The candidate is captured
-        // now: the deferred open must not depend on state a session teardown may have
-        // cleared in between.
-        row.MouseEnter += (_, _) => SelectSearchRow(index);
-        row.MouseLeftButtonUp += (_, _) => OpenSearchResultAfterInput(candidate);
+        // selection, and one click opens exactly one result. Hover only changes
+        // selection when the pointer has actually moved.
+        void OnRowHover()
+        {
+            if (_searchContextMenu?.IsOpen == true)
+            {
+                return;
+            }
+            DockNativeMethods.GetCursorPos(out var cursor);
+            if (cursor.X == _lastSearchMousePoint.X && cursor.Y == _lastSearchMousePoint.Y)
+            {
+                return;
+            }
+            _lastSearchMousePoint = cursor;
+            SelectSearchRow(index);
+        }
+        row.MouseEnter += (_, _) => OnRowHover();
+        row.MouseMove += (_, _) => OnRowHover();
+        row.MouseLeftButtonDown += (_, _) =>
+        {
+            _pressedSearchRowIndex = index;
+            SelectSearchRow(index);
+        };
+        row.MouseLeftButtonUp += (_, _) =>
+        {
+            var pressed = _pressedSearchRowIndex;
+            _pressedSearchRowIndex = -1;
+            if (pressed == index || pressed == -1)
+            {
+                OpenSearchResultAfterInput(candidate);
+            }
+        };
         row.ContextMenuOpening += (_, args) => args.Handled = true;
+        row.MouseRightButtonDown += (_, args) =>
+        {
+            args.Handled = true;
+            SelectSearchRow(index);
+        };
         row.MouseRightButtonUp += (_, args) =>
         {
             args.Handled = true;
             SelectSearchRow(index);
-            OpenSearchContextMenu(row, candidate);
+            var offsetX = Math.Clamp(args.GetPosition(row).X, 8d, Math.Max(8d, row.ActualWidth - 180d));
+            OpenSearchContextMenu(row, candidate, offsetX);
         };
         return row;
     }
 
-    private void OpenSearchContextMenu(Border row, TopBarSearchCandidate candidate)
+    private void OpenSearchContextMenu(Border row, TopBarSearchCandidate candidate, double horizontalOffset = 8d)
     {
         _searchContextMenu?.SetCurrentValue(ContextMenu.IsOpenProperty, false);
-        var menu = new ContextMenu { PlacementTarget = row };
+        var menu = CreateStyledSearchContextMenu(row, PlacementMode.Bottom, horizontalOffset, 2d);
         // Allocate only for the invoked result, not for every row on every keystroke.
-        void Add(string title, Action action)
+        void Add(string title, string gestureText, Action action)
         {
-            var item = new MenuItem { Header = title };
-            item.Click += (_, _) => Dispatcher.BeginInvoke(() =>
+            var item = CreateStyledSearchMenuItem(title, gestureText, () =>
             {
                 EndSearchSession();
                 action();
-            }, DispatcherPriority.Input);
+            });
             menu.Items.Add(item);
         }
-        Add("打开", () => _environment.OpenSearchTarget(candidate));
-        Add("打开文件位置", () => _environment.OpenSearchTargetLocation(candidate));
-        Add("复制路径", () =>
-        {
-            try { System.Windows.Clipboard.SetText(candidate.Path); }
-            catch (ExternalException) { /* Another application may hold the clipboard. */ }
-        });
+        Add("打开", "Enter", () => _environment.OpenSearchTarget(candidate));
+        Add("打开文件位置", "Ctrl+Enter", () => _environment.OpenSearchTargetLocation(candidate));
+        Add("复制路径", "Ctrl+Shift+C", () => TryCopyTextToClipboard(candidate.Path));
         menu.Closed += (_, _) => Dispatcher.BeginInvoke(() =>
         {
             if (!ReferenceEquals(_searchContextMenu, menu)) return;
@@ -1804,6 +1885,167 @@ public sealed partial class TopBarWindow : Window
         row.ContextMenu = menu;
         _searchContextMenu = menu;
         menu.IsOpen = true;
+    }
+
+    private void OnSearchBoxContextMenuOpening(object sender, ContextMenuEventArgs args)
+    {
+        if (sender is not TextBox box)
+        {
+            return;
+        }
+        args.Handled = true;
+        _searchContextMenu?.SetCurrentValue(ContextMenu.IsOpenProperty, false);
+        var offsetX = args.CursorLeft >= 0 ? Math.Max(0d, args.CursorLeft) : 4d;
+        var menu = CreateStyledSearchContextMenu(box, PlacementMode.Bottom, offsetX, 4d);
+        var hasSelection = box.SelectionLength > 0;
+        var hasText = !string.IsNullOrEmpty(box.Text);
+        var canPaste = false;
+        try { canPaste = System.Windows.Clipboard.ContainsText(); }
+        catch (ExternalException) { }
+
+        menu.Items.Add(CreateStyledSearchMenuItem("剪切", "Ctrl+X", () => { box.Cut(); box.Focus(); }, hasSelection));
+        menu.Items.Add(CreateStyledSearchMenuItem("复制", "Ctrl+C", () => { box.Copy(); box.Focus(); }, hasSelection));
+        menu.Items.Add(CreateStyledSearchMenuItem("粘贴", "Ctrl+V", () => { box.Paste(); box.Focus(); }, canPaste));
+        menu.Items.Add(CreateStyledSearchMenuItem("全选", "Ctrl+A", () => { box.SelectAll(); box.Focus(); }, hasText));
+        menu.Closed += (_, _) => Dispatcher.BeginInvoke(() =>
+        {
+            if (!ReferenceEquals(_searchContextMenu, menu)) return;
+            _searchContextMenu = null;
+            box.ContextMenu = null;
+            if (!_searchActive) return;
+            if (DockNativeMethods.GetForegroundWindow() != SearchInputHandle)
+            {
+                EndSearchSession();
+                return;
+            }
+            box.Focus();
+        }, DispatcherPriority.Input);
+        box.ContextMenu = menu;
+        _searchContextMenu = menu;
+        menu.IsOpen = true;
+    }
+
+    private ContextMenu CreateStyledSearchContextMenu(
+        UIElement placementTarget,
+        PlacementMode placement,
+        double horizontalOffset,
+        double verticalOffset)
+    {
+        var glass = SearchGlass;
+        var surfaceColor = (Color)ColorConverter.ConvertFromString(glass.Surface);
+        if (surfaceColor.A < 242)
+        {
+            surfaceColor.A = 242;
+        }
+        var surfaceBrush = CreateFrozenColorBrush(surfaceColor);
+        var borderBrush = FrozenBrush(glass.Border);
+
+        var borderFactory = new FrameworkElementFactory(typeof(Border));
+        borderFactory.SetValue(Border.BackgroundProperty, new TemplateBindingExtension(System.Windows.Controls.Control.BackgroundProperty));
+        borderFactory.SetValue(Border.BorderBrushProperty, new TemplateBindingExtension(System.Windows.Controls.Control.BorderBrushProperty));
+        borderFactory.SetValue(Border.BorderThicknessProperty, new Thickness(1));
+        borderFactory.SetValue(Border.CornerRadiusProperty, new CornerRadius(8));
+        borderFactory.SetValue(Border.PaddingProperty, new Thickness(4));
+        borderFactory.SetValue(UIElement.SnapsToDevicePixelsProperty, true);
+
+        var presenterFactory = new FrameworkElementFactory(typeof(ItemsPresenter));
+        presenterFactory.SetValue(UIElement.SnapsToDevicePixelsProperty, true);
+        borderFactory.AppendChild(presenterFactory);
+
+        return new ContextMenu
+        {
+            PlacementTarget = placementTarget,
+            Placement = placement,
+            HorizontalOffset = horizontalOffset,
+            VerticalOffset = verticalOffset,
+            Background = surfaceBrush,
+            BorderBrush = borderBrush,
+            Foreground = _searchForeground,
+            HasDropShadow = true,
+            Template = new ControlTemplate(typeof(ContextMenu))
+            {
+                VisualTree = borderFactory
+            }
+        };
+    }
+
+    private MenuItem CreateStyledSearchMenuItem(
+        string title,
+        string? gestureText,
+        Action action,
+        bool isEnabled = true)
+    {
+        var borderFactory = new FrameworkElementFactory(typeof(Border), "ItemBorder");
+        borderFactory.SetValue(Border.BackgroundProperty, Brushes.Transparent);
+        borderFactory.SetValue(Border.CornerRadiusProperty, new CornerRadius(5));
+        borderFactory.SetValue(Border.PaddingProperty, new Thickness(10, 5, 10, 5));
+        borderFactory.SetValue(FrameworkElement.MarginProperty, new Thickness(0, 1, 0, 1));
+
+        var dockFactory = new FrameworkElementFactory(typeof(DockPanel));
+        if (!string.IsNullOrEmpty(gestureText))
+        {
+            var gestureFactory = new FrameworkElementFactory(typeof(TextBlock), "GestureText");
+            gestureFactory.SetValue(DockPanel.DockProperty, System.Windows.Controls.Dock.Right);
+            gestureFactory.SetValue(TextBlock.TextProperty, new TemplateBindingExtension(MenuItem.InputGestureTextProperty));
+            gestureFactory.SetValue(TextBlock.ForegroundProperty, new TemplateBindingExtension(System.Windows.Controls.Control.ForegroundProperty));
+            gestureFactory.SetValue(UIElement.OpacityProperty, 0.5d);
+            gestureFactory.SetValue(TextBlock.FontSizeProperty, 11d);
+            gestureFactory.SetValue(FrameworkElement.MarginProperty, new Thickness(18, 0, 0, 0));
+            gestureFactory.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
+            dockFactory.AppendChild(gestureFactory);
+        }
+
+        var headerFactory = new FrameworkElementFactory(typeof(ContentPresenter));
+        headerFactory.SetValue(ContentPresenter.ContentSourceProperty, "Header");
+        headerFactory.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
+        headerFactory.SetValue(ContentPresenter.RecognizesAccessKeyProperty, true);
+        dockFactory.AppendChild(headerFactory);
+        borderFactory.AppendChild(dockFactory);
+
+        var template = new ControlTemplate(typeof(MenuItem))
+        {
+            VisualTree = borderFactory
+        };
+        var highlightTrigger = new Trigger
+        {
+            Property = MenuItem.IsHighlightedProperty,
+            Value = true
+        };
+        highlightTrigger.Setters.Add(new Setter(Border.BackgroundProperty, SearchRowSelectedBrush, "ItemBorder"));
+        template.Triggers.Add(highlightTrigger);
+
+        var disabledTrigger = new Trigger
+        {
+            Property = UIElement.IsEnabledProperty,
+            Value = false
+        };
+        disabledTrigger.Setters.Add(new Setter(UIElement.OpacityProperty, 0.4d, "ItemBorder"));
+        template.Triggers.Add(disabledTrigger);
+
+        var item = new MenuItem
+        {
+            Header = title,
+            InputGestureText = gestureText ?? string.Empty,
+            Foreground = _searchForeground,
+            FontSize = 12,
+            IsEnabled = isEnabled,
+            Cursor = isEnabled ? Cursors.Hand : Cursors.Arrow,
+            Template = template
+        };
+        item.Click += (_, _) => Dispatcher.BeginInvoke(action, DispatcherPriority.Input);
+        return item;
+    }
+
+    private static void TryCopyTextToClipboard(string text)
+    {
+        try
+        {
+            System.Windows.Clipboard.SetText(text);
+        }
+        catch (ExternalException)
+        {
+            // Another application may hold the clipboard.
+        }
     }
 
     private static string KindLabel(TopBarSearchItemKind kind) => kind switch
@@ -1828,10 +2070,10 @@ public sealed partial class TopBarWindow : Window
         for (var index = 0; index < _searchRowBorders.Count; index++)
         {
             _searchRowBorders[index].Background = index == _searchSelected
-                ? new SolidColorBrush(Color.FromArgb(70, 122, 180, 237))
+                ? SearchRowSelectedBrush
                 : Brushes.Transparent;
         }
-        if (_searchSelected < _searchRowBorders.Count)
+        if ((uint)_searchSelected < (uint)_searchRowBorders.Count)
         {
             _searchRowBorders[_searchSelected].BringIntoView();
         }
@@ -1843,7 +2085,13 @@ public sealed partial class TopBarWindow : Window
         {
             return;
         }
-        _searchSelected = (_searchSelected + delta + _searchResults.Count) % _searchResults.Count;
+        var next = Math.Clamp(_searchSelected + delta, 0, _searchResults.Count - 1);
+        if (next == _searchSelected)
+        {
+            return;
+        }
+        _searchSelected = next;
+        DockNativeMethods.GetCursorPos(out _lastSearchMousePoint);
         UpdateSearchSelection();
     }
 
@@ -1871,6 +2119,13 @@ public sealed partial class TopBarWindow : Window
                     OpenSearchContextMenu(_searchRowBorders[_searchSelected], _searchResults[_searchSelected]);
                 args.Handled = true;
                 break;
+            case Key.C when Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift):
+                if ((uint)_searchSelected < (uint)_searchResults.Count)
+                {
+                    CopySearchPathAfterInput(_searchResults[_searchSelected]);
+                    args.Handled = true;
+                }
+                break;
             case Key.Escape:
                 EndSearchSessionAfterInput();
                 args.Handled = true;
@@ -1880,7 +2135,15 @@ public sealed partial class TopBarWindow : Window
                 // survive a teardown racing in before the dispatcher turn.
                 if ((uint)_searchSelected < (uint)_searchResults.Count)
                 {
-                    OpenSearchResultAfterInput(_searchResults[_searchSelected]);
+                    var selected = _searchResults[_searchSelected];
+                    if ((Keyboard.Modifiers & ModifierKeys.Control) != 0)
+                    {
+                        OpenSearchLocationAfterInput(selected);
+                    }
+                    else
+                    {
+                        OpenSearchResultAfterInput(selected);
+                    }
                 }
                 args.Handled = true;
                 break;
@@ -1909,8 +2172,14 @@ public sealed partial class TopBarWindow : Window
         }
         if (_searchIconCache.Count > 512)
         {
-            // A coarse bound: clearing all is fine, rows re-request what they show.
-            _searchIconCache.Clear();
+            var activePaths = new HashSet<string>(results.Select(item => item.Path), StringComparer.OrdinalIgnoreCase);
+            foreach (var key in _searchIconCache.Keys)
+            {
+                if (!activePaths.Contains(key))
+                {
+                    _searchIconCache.TryRemove(key, out _);
+                }
+            }
         }
         Task.Run(() =>
         {
@@ -1920,25 +2189,28 @@ public sealed partial class TopBarWindow : Window
                 {
                     return;
                 }
-                _searchIconCache[path] = ShellIconProvider.GetIcon(path);
-            }
-        }).ContinueWith(_ => Dispatcher.BeginInvoke(() =>
-        {
-            if (_closing || _searchFlyout?.IsOpen != true)
-            {
-                return;
-            }
-            foreach (var row in _searchRowBorders)
-            {
-                if (row.Child is DockPanel panel
-                    && panel.Children.OfType<Image>().FirstOrDefault() is { } image
-                    && row.Tag is int index
-                    && index < _searchResults.Count)
+                var icon = ShellIconProvider.GetIcon(path);
+                _searchIconCache[path] = icon;
+                Dispatcher.BeginInvoke(() =>
                 {
-                    image.Source = _searchIconCache.GetValueOrDefault(_searchResults[index].Path);
-                }
+                    if (_closing || _searchFlyout?.IsOpen != true)
+                    {
+                        return;
+                    }
+                    foreach (var row in _searchRowBorders)
+                    {
+                        if (row.Child is DockPanel panel
+                            && panel.Children.OfType<Image>().FirstOrDefault() is { } image
+                            && row.Tag is int index
+                            && index < _searchResults.Count
+                            && string.Equals(_searchResults[index].Path, path, StringComparison.OrdinalIgnoreCase))
+                        {
+                            image.Source = icon;
+                        }
+                    }
+                }, DispatcherPriority.Background);
             }
-        }));
+        });
     }
 
     private void EnsureSearchFlyout()
@@ -1970,6 +2242,10 @@ public sealed partial class TopBarWindow : Window
                 Content = rows
             }
         };
+        card.PreviewMouseLeftButtonDown += (_, _) => _pressedSearchRowIndex = -2;
+        card.ContextMenuOpening += (_, args) => args.Handled = true;
+        card.MouseRightButtonDown += (_, args) => args.Handled = true;
+        card.MouseRightButtonUp += (_, args) => args.Handled = true;
         var host = _searchHost;
         var flyout = new Popup
         {
@@ -2009,6 +2285,7 @@ public sealed partial class TopBarWindow : Window
     private void CloseSearchFlyout()
     {
         _pendingSearchResults = null;
+        _pressedSearchRowIndex = -1;
         _searchContextMenu?.SetCurrentValue(ContextMenu.IsOpenProperty, false);
         _searchContextMenu = null;
         _searchCancellation?.Cancel();
@@ -2083,6 +2360,8 @@ public sealed partial class TopBarWindow : Window
         }
 
         _searchActive = true;
+        _pressedSearchRowIndex = -1;
+        DockNativeMethods.GetCursorPos(out _lastSearchMousePoint);
         _searchSessionOwner = this;
         _searchPreviousForeground = DockNativeMethods.GetForegroundWindow();
         if (_searchWindow is { } searchWindow)
@@ -2142,6 +2421,20 @@ public sealed partial class TopBarWindow : Window
         {
             EndSearchSession();
             _environment.OpenSearchTarget(candidate);
+        }, DispatcherPriority.Input);
+
+    private void OpenSearchLocationAfterInput(TopBarSearchCandidate candidate) =>
+        Dispatcher.BeginInvoke(() =>
+        {
+            EndSearchSession();
+            _environment.OpenSearchTargetLocation(candidate);
+        }, DispatcherPriority.Input);
+
+    private void CopySearchPathAfterInput(TopBarSearchCandidate candidate) =>
+        Dispatcher.BeginInvoke(() =>
+        {
+            EndSearchSession();
+            TryCopyTextToClipboard(candidate.Path);
         }, DispatcherPriority.Input);
 
     /// <summary>Clears the box, closes the flyout and returns the bar to never-activating.</summary>
@@ -2341,6 +2634,8 @@ public sealed partial class TopBarWindow : Window
     /// <summary>Results of the last rendered search, in display order, for tests.</summary>
     internal IReadOnlyList<TopBarSearchCandidate> SearchResults => _searchResults;
 
+    internal int SearchSelectedIndex => _searchSelected;
+
     internal bool SearchSessionActive => _searchActive;
     internal SearchWindow? FloatingSearchWindow => _searchWindow;
 
@@ -2360,9 +2655,12 @@ public sealed partial class TopBarWindow : Window
         }
     }
 
-    private static System.Windows.Media.SolidColorBrush FrozenBrush(string color)
+    private static System.Windows.Media.SolidColorBrush FrozenBrush(string color) =>
+        CreateFrozenColorBrush((Color)ColorConverter.ConvertFromString(color));
+
+    private static SolidColorBrush CreateFrozenColorBrush(Color color)
     {
-        var brush = new SolidColorBrush((Color)ColorConverter.ConvertFromString(color));
+        var brush = new SolidColorBrush(color);
         brush.Freeze();
         return brush;
     }
