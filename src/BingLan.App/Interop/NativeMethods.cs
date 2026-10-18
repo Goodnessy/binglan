@@ -4,6 +4,30 @@ namespace BingLan.App.Interop;
 
 internal static class NativeMethods
 {
+    internal const long WsExNoRedirectionBitmap = 0x00200000L;
+    internal const int DwmwaUseHostBackdropBrush = 17;
+    internal delegate nint WindowProcedure(nint hwnd, uint message, nint wParam, nint lParam);
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    internal struct WindowClass
+    {
+        internal uint Size, Style;
+        internal WindowProcedure Procedure;
+        internal int ClassExtra, WindowExtra;
+        internal nint Instance, Icon, Cursor, Background;
+        internal string? Menu, Name;
+        internal nint SmallIcon;
+    }
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    internal static extern ushort RegisterClassEx(ref WindowClass windowClass);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    internal static extern nint CreateWindowEx(uint exStyle, string className, string title, uint style, int x, int y, int width, int height, nint owner, nint menu, nint instance, nint parameter);
+    [DllImport("user32.dll")]
+    internal static extern nint DefWindowProc(nint hwnd, uint message, nint wParam, nint lParam);
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool DestroyWindow(nint hwnd);
     internal const int WmSize = 0x0005;
     internal const int WmShowWindow = 0x0018;
     internal const int WmSettingChange = 0x001A;

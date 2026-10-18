@@ -3,6 +3,7 @@ using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media.Animation;
 using BingLan.App.Interop;
+using BingLan.App.Dock;
 using BingLan.Core.Dock;
 using BingLan.Core.Models;
 using MouseEventArgs = System.Windows.Input.MouseEventArgs;
@@ -25,10 +26,12 @@ public partial class DockHandleWindow : Window
     private bool _dragStarted;
     private PixelPoint _pressStartCursor;
     private PixelRect _pressStartRect;
+    private readonly DockGlassSurface _glass;
 
     internal DockHandleWindow()
     {
         InitializeComponent();
+        _glass = new DockGlassSurface(this, HandleSurface, "DockHandleBrush", "DockSurfaceBorderBrush");
         SourceInitialized += OnSourceInitialized;
     }
 

@@ -3,10 +3,10 @@
 ## 构建
 
 ```powershell
-pwsh -NoProfile -File .\installer\build.ps1 -Version 0.2.24
+pwsh -NoProfile -File .\installer\build.ps1 -Version 0.2.25
 ```
 
-输出 `installer\bin\BingLan-Setup-0.2.24.exe`（约 53 MB）和免安装包 `installer\bin\BingLan-0.2.24-portable.zip`。脚本先把应用发布为 win-x64 自包含程序（附带 .NET 运行时，只保留中文和英文资源），再用 Inno Setup 打包为按用户安装的安装程序，并把同一份发布输出压成免安装 zip。构建还需要 .NET 10 SDK、PowerShell 7、Visual Studio 2022 C++ x64 工具链和 Windows SDK；自有任务栏 DLL 随发布输出进入安装包，细节见 [任务栏 XAML 适配](TASKBAR-XAML.md)。需要 Inno Setup 6：`winget install JRSoftware.InnoSetup --scope user`。注意 winget 安装的 Inno Setup 不带简体中文语言文件（非官方翻译），脚本引用的 `Languages\ChineseSimplified.isl` 需从 [istrans 页面](https://jrsoftware.org/files/istrans/) 下载后放入 Inno Setup 安装目录的 `Languages\` 下。
+输出 `installer\bin\BingLan-Setup-0.2.25.exe`（约 56.4 MB）和免安装包 `installer\bin\BingLan-0.2.25-portable.zip`。脚本先把应用发布为 win-x64 自包含程序（附带 .NET 运行时，只保留中文和英文资源），再用 Inno Setup 打包为按用户安装的安装程序，并把同一份发布输出压成免安装 zip。构建还需要 .NET 10 SDK、PowerShell 7、Visual Studio 2022 C++ x64 工具链和 Windows SDK；自有任务栏 DLL 随发布输出进入安装包，细节见 [任务栏 XAML 适配](TASKBAR-XAML.md)。需要 Inno Setup 6：`winget install JRSoftware.InnoSetup --scope user`。注意 winget 安装的 Inno Setup 不带简体中文语言文件（非官方翻译），脚本引用的 `Languages\ChineseSimplified.isl` 需从 [istrans 页面](https://jrsoftware.org/files/istrans/) 下载后放入 Inno Setup 安装目录的 `Languages\` 下。
 
 ## 免安装包
 
@@ -25,12 +25,24 @@ zip 版内容与安装后的程序目录一致（程序文件、`使用说明.md
 
 ## 依赖记录
 
+### Dock 原生毛玻璃
+
+| 项目 | 内容 |
+| --- | --- |
+| 依赖 | Microsoft.Windows.SDK.NET.Ref 10.0.19041.57（SDK 自动还原的 Windows API 投影） |
+| 用途 | Windows Composition 背景画刷与圆角几何裁剪；Dock 和隐藏把手共用一个适配实现 |
+| 许可证 | [Windows SDK 许可](https://aka.ms/WinSDKLicenseURL)，程序目录附带第三方组件说明 |
+| 打包体积 | 未压缩的 Microsoft.Windows.SDK.NET.dll 约 23.73 MiB，WinRT.Runtime.dll 约 0.50 MiB；安装包增量以实际压缩结果为准 |
+| 运行时成本 | 玻璃可见时由系统合成层处理实时背景；动画期间跟随 WPF 渲染节拍提交几何，静止时不添加计时器；隐藏时销毁背景窗口 |
+| 可替代方案 | 原半透明 WPF 表面；WCA 实验无法同时满足裁剪与形变需求，正式版不使用 WCA |
+| 兼容与回退 | Windows 11、系统透明效果开启时尝试创建；Windows 10、高对比度、透明效果关闭或合成失败时恢复半透明表面 |
+
 | 项目 | 内容 |
 | --- | --- |
 | 依赖 | Inno Setup 6.7.3（构建工具，不随应用分发） |
 | 用途 | 生成安装程序：文件安装、快捷方式、启动项、卸载和数据保留询问 |
 | 许可证 | Inno Setup License：允许包括商业用途在内的任何用途；官方请求商业用户购买许可证，但不强制，个人和非商业使用免费 |
-| 打包体积 | 安装程序约 53 MB；安装后约 159 MiB（256 个文件），主要为自包含 .NET 运行时 |
+| 打包体积 | 安装程序约 56.4 MB；安装后还包含约 24.23 MiB 的 Windows API 投影，主要体积仍为自包含 .NET 运行时 |
 | 运行时成本 | 无，Inno Setup 只在构建时使用 |
 | 可替代方案 | MSI（开发机上 Windows Installer 对按用户安装报错 2503，无法使用）；依赖框架的发布（安装包约 1 MB，但需先安装 .NET 10 桌面运行时）；MSIX（需要代码签名证书） |
 

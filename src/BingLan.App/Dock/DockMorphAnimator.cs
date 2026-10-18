@@ -42,6 +42,7 @@ internal sealed class DockMorphAnimator
 
     /// <summary>Raised once when a collapse flight finishes; the owner hides the window then.</summary>
     internal event Action? CollapseCompleted;
+    internal event Action? StateChanged;
 
     internal DockMorphKind ActiveKind => _active;
 
@@ -68,6 +69,7 @@ internal sealed class DockMorphAnimator
         _scale.BeginAnimation(ScaleTransform.ScaleXProperty, scaleX);
         _scale.BeginAnimation(ScaleTransform.ScaleYProperty, ToOne(duration, EasingMode.EaseOut));
         _surface.BeginAnimation(UIElement.OpacityProperty, ToOne(duration, EasingMode.EaseOut));
+        StateChanged?.Invoke();
     }
 
     /// <summary>Shrinks the row into the handle; <see cref="CollapseCompleted"/> fires at the end.</summary>
@@ -92,6 +94,7 @@ internal sealed class DockMorphAnimator
         {
             EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseIn }
         });
+        StateChanged?.Invoke();
     }
 
     /// <summary>
@@ -109,6 +112,7 @@ internal sealed class DockMorphAnimator
         var fade = ToOne(duration, EasingMode.EaseOut);
         fade.Completed += (_, _) => OnExpandCompleted(flight);
         _surface.BeginAnimation(UIElement.OpacityProperty, fade);
+        StateChanged?.Invoke();
         if (grow == 1d)
         {
             return;
@@ -135,6 +139,7 @@ internal sealed class DockMorphAnimator
         _scale.ScaleX = 1d;
         _scale.ScaleY = 1d;
         _surface.Opacity = 1d;
+        StateChanged?.Invoke();
     }
 
     private static DoubleAnimation ToOne(Duration duration, EasingMode easing) => new(1d, duration)
@@ -178,6 +183,7 @@ internal sealed class DockMorphAnimator
         _scale.ScaleX = 1d;
         _scale.ScaleY = 1d;
         _surface.Opacity = 1d;
+        StateChanged?.Invoke();
         CollapseCompleted?.Invoke();
     }
 }

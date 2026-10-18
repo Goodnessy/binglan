@@ -102,6 +102,11 @@ internal static class Program
         var app = new BingLan.App.App();
         app.InitializeComponent();
         BingLan.App.App.UseSoftwareRendering();
+        if (Environment.GetCommandLineArgs().Contains("--dock-glass-preview"))
+        {
+            DockGlassPreview.Run(app);
+            return 0;
+        }
 
         Run("待办真实控件编辑与勾选", TestTodoControls, failures);
         Run("逐像素透明 HWND 与单一可调圆角", TestUnifiedCornerAndSettings, failures);
@@ -148,6 +153,7 @@ internal static class Program
         Run("显示器排列切换后卡片回到该排列下的位置", () => DisplayLayoutWindowTests.Run(ShowAndPump, Pump), failures);
         Run("Dock 隐藏把手的窗口样式、拖动与显隐", () => DockHandleTests.Run(ShowAndPump, Pump), failures);
         Run("Dock 形变动画的收敛点、完成与打断", () => DockMorphAnimatorTests.Run(ShowAndPump, Pump, PumpUntil), failures);
+        Run("Dock 原生玻璃形变、层级、回退与窗口清理", () => DockGlassSurfaceTests.Run(ShowAndPump, Pump, PumpUntil), failures);
         Run("Dock 最大化状态钩子的过滤与即时通知", () => MaximizeStateWatcherTests.Run(ShowAndPump, Pump, PumpUntil), failures);
         Run("顶端信息条的窗口样式、模块与点击深链", () => TopBarWindowTests.Run(ShowAndPump, Pump), failures);
         Run("搜索菜单对比度、右键与键盘操作", () => TopBarWindowTests.SearchResultContextMenuStaysOpen(ShowAndPump, Pump), failures);

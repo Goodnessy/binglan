@@ -66,6 +66,7 @@ public partial class IceBlueDockWindow : Window
     private bool _handleExpanded;
     private PixelRect _expandedRect;
     private readonly DockMorphAnimator _morph;
+    private readonly DockGlassSurface _glass;
     private bool _trueFullScreenForeground;
     private ContextMenu? _openMenu;
     private DateTimeOffset _lastReservationAttempt;
@@ -86,6 +87,8 @@ public partial class IceBlueDockWindow : Window
         _state = state;
         InitializeComponent();
         _morph = new DockMorphAnimator(DockSurface);
+        _glass = new DockGlassSurface(this, DockSurface, "DockSurfaceBrush", "DockSurfaceBorderBrush");
+        _morph.StateChanged += () => _glass.TrackAnimation(_morph.ActiveKind != DockMorphKind.None);
         _morph.CollapseCompleted += OnCollapseMorphCompleted;
         _watcher = new WindowEventWatcher(Dispatcher);
         _watcher.SnapshotInvalidated += RefreshWindows;
@@ -298,6 +301,7 @@ public partial class IceBlueDockWindow : Window
     private void OnClosing(object? sender, CancelEventArgs e)
     {
         _closing = true;
+        _glass.Dispose();
         _morph.Snap();
         if (_handle != 0)
         {
