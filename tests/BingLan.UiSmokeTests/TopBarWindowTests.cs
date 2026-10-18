@@ -187,7 +187,6 @@ internal static class TopBarWindowTests
         SearchBoxSitsAtBarCentre(show, pump);
         RealClickOnResultOpensIt(show, pump);
         SearchResultWindowDoesNotResize(show, pump);
-        SearchResultContextMenuStaysOpen(show, pump);
         SearchPresentationModes(show, pump);
         EverythingProtocolAndFallback(show, pump);
         WindowsIndexQueryRules();
@@ -682,11 +681,18 @@ internal static class TopBarWindowTests
             // and flyout gap right-click not bubbling to TopBarWindow.ContextMenu.
             bar.BeginSearchSession();
             pump();
+            // These renderer checks supply rows directly; finish the empty query's
+            // pending cleanup before injecting them into the active session.
+            bar.PumpSearch();
+            pump();
             var render = typeof(TopBarWindow).GetMethod("RenderSearchResults",
                 System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
             var stage1 = SearchSource().Take(2).ToList();
             render.Invoke(bar, [stage1, "测试", "正在查询文件索引…"]);
+            Thread.Sleep(300);
             pump();
+            Assert(bar.SearchResults.Count == stage1.Count,
+                $"首阶段结果应在延迟回调后保留（输入 '{box.Text}'，结果 {bar.SearchResults.Count}，会话 {bar.SearchSessionActive}）");
             Assert(bar.SearchSelectedIndex == 0, "首阶段渲染默认选中第 0 行");
             PressKey(box, System.Windows.Input.Key.Up);
             pump();
@@ -717,7 +723,9 @@ internal static class TopBarWindowTests
                 && ReferenceEquals(rowsBefore[0], rowsAfter[0])
                 && ReferenceEquals(rowsBefore[1], rowsAfter[1])
                 && bar.SearchSelectedIndex == 1,
-                "二阶段追加文件结果应复用已有行控件并保持当前选中项不跳变");
+                $"二阶段追加文件结果应复用已有行控件并保持当前选中项不跳变（行数 {rowsAfter.Count}，" +
+                $"选中 {bar.SearchSelectedIndex}，输入 {box.Text}，会话 {bar.SearchSessionActive}，" +
+                $"候选读取 {environment.CandidateReads}，结果 {string.Join(',', bar.SearchResults.Select(item => item.DisplayName))}）");
 
             // Pressing on row 0 and releasing on row 1 must not open row 1.
             var openedBeforeCrossClick = environment.OpenedTargets.Count;
@@ -1226,13 +1234,21 @@ internal static class TopBarWindowTests
         finally { bar.Close(); pump(); }
     }
 
-    private static void SearchResultContextMenuStaysOpen(Action<Window> show, Action pump)
+    internal static void SearchResultContextMenuStaysOpen(Action<Window> show, Action pump)
     {
         foreach (var mode in Enum.GetValues<SearchPresentation>())
         {
             var state = BarState();
             state.VisibilityMode = TopBarVisibilityMode.SmartHide;
             state.SearchPresentation = mode;
+            var surface = mode == SearchPresentation.TopBar ? "#FFFFFF"
+                : mode == SearchPresentation.Floating ? "#00FFFF" : "#18222F";
+            state.FollowCardLook = false;
+            state.SurfaceColor = surface;
+            state.SurfaceOpacity = 0.08d;
+            state.SearchFollowCardLook = false;
+            state.SearchSurfaceColor = surface;
+            state.SearchSurfaceOpacity = 0.08d;
             using var sampler = new WindowsPerformanceSamplingService();
             var environment = new FakeEnvironment { SearchCandidates = SearchSource() };
             var bar = new TopBarWindow(state, new DesktopStyleState(), environment, sampler);
@@ -1275,6 +1291,27 @@ internal static class TopBarWindowTests
                 var until = Environment.TickCount64 + 300;
                 while (Environment.TickCount64 < until) { pump(); Thread.Sleep(10); }
                 Assert(menu.IsOpen && bar.SearchSessionActive && bar.SearchFlyout?.IsOpen == true, "菜单取得焦点后搜索和结果不能消失");
+                var card = LogicalDescendants(bar.SearchFlyout!.Child).OfType<Border>().First();
+                var background = ((SolidColorBrush)card.Background).Color;
+                Assert(background.A == 255, "低透明度搜索框的结果面板应遮住桌面内容");
+                foreach (var text in LogicalDescendants(row).OfType<TextBlock>())
+                    AssertSearchContrast(((SolidColorBrush)text.Foreground).Color, background, text.Opacity);
+                var menuBackground = ((SolidColorBrush)menu.Background).Color;
+                Assert(menuBackground.A == 255, "命令菜单应有独立的不透明底色");
+                foreach (var item in menu.Items.OfType<MenuItem>())
+                {
+                    AssertSearchContrast(((SolidColorBrush)item.Foreground).Color, menuBackground);
+                    item.ApplyTemplate();
+                    var gesture = (TextBlock)item.Template.FindName("GestureText", item);
+                    AssertSearchContrast(((SolidColorBrush)gesture.Foreground).Color, menuBackground, gesture.Opacity);
+                    Assert(item.ActualHeight >= 34, "菜单项应有足够的点击高度");
+                }
+                if (Environment.GetEnvironmentVariable("BINGLAN_UI_SEARCH_CAPTURE") is { Length: > 0 } captureDirectory)
+                {
+                    System.IO.Directory.CreateDirectory(captureDirectory);
+                    SaveSearchPreview(card, System.IO.Path.Combine(captureDirectory, $"search-{mode}.png"));
+                    SaveSearchPreview(menu, System.IO.Path.Combine(captureDirectory, $"menu-{mode}.png"));
+                }
                 // A late index reply must keep the menu's placement row alive.
                 bar.PumpSearch();
                 until = Environment.TickCount64 + 300;
@@ -1300,6 +1337,31 @@ internal static class TopBarWindowTests
                 pump();
             }
         }
+    }
+
+    private static void AssertSearchContrast(Color foreground, Color background, double opacity = 1d)
+    {
+        static double Linear(double value) => value <= 0.04045d ? value / 12.92d : Math.Pow((value + 0.055d) / 1.055d, 2.4d);
+        static double Luminance(double red, double green, double blue) =>
+            0.2126d * Linear(red) + 0.7152d * Linear(green) + 0.0722d * Linear(blue);
+        var alpha = foreground.A / 255d * opacity;
+        var text = Luminance((foreground.R * alpha + background.R * (1 - alpha)) / 255d,
+            (foreground.G * alpha + background.G * (1 - alpha)) / 255d,
+            (foreground.B * alpha + background.B * (1 - alpha)) / 255d);
+        var surface = Luminance(background.R / 255d, background.G / 255d, background.B / 255d);
+        var contrast = (Math.Max(text, surface) + 0.05d) / (Math.Min(text, surface) + 0.05d);
+        Assert(contrast >= 4.5d, $"搜索文字与背景对比度应达到 4.5:1，实际 {contrast:F2}:1");
+    }
+
+    private static void SaveSearchPreview(FrameworkElement element, string path)
+    {
+        var bitmap = new System.Windows.Media.Imaging.RenderTargetBitmap(
+            (int)Math.Ceiling(element.ActualWidth), (int)Math.Ceiling(element.ActualHeight), 96, 96, PixelFormats.Pbgra32);
+        bitmap.Render(element);
+        var encoder = new System.Windows.Media.Imaging.PngBitmapEncoder();
+        encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(bitmap));
+        using var stream = System.IO.File.Create(path);
+        encoder.Save(stream);
     }
 
     private static void SearchPresentationModes(Action<Window> show, Action pump)

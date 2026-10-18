@@ -150,6 +150,7 @@ internal static class Program
         Run("Dock 形变动画的收敛点、完成与打断", () => DockMorphAnimatorTests.Run(ShowAndPump, Pump, PumpUntil), failures);
         Run("Dock 最大化状态钩子的过滤与即时通知", () => MaximizeStateWatcherTests.Run(ShowAndPump, Pump, PumpUntil), failures);
         Run("顶端信息条的窗口样式、模块与点击深链", () => TopBarWindowTests.Run(ShowAndPump, Pump), failures);
+        Run("搜索菜单对比度、右键与键盘操作", () => TopBarWindowTests.SearchResultContextMenuStaysOpen(ShowAndPump, Pump), failures);
         Run("主题导入对话框显示名称与预览图", TestThemeImportDialogShowsNameAndPreview, failures);
 
         if (failures.Count > 0)
@@ -158,7 +159,8 @@ internal static class Program
             return 1;
         }
 
-        Console.WriteLine("全部 WPF UI 烟雾测试通过。");
+        Console.WriteLine(Environment.GetEnvironmentVariable("BINGLAN_UI_TEST_FILTER") is { Length: > 0 }
+            ? "所选 WPF UI 烟雾测试通过。" : "全部 WPF UI 烟雾测试通过。");
         return 0;
     }
 
@@ -3369,6 +3371,8 @@ internal static class Program
 
     private static void Run(string name, Action test, List<string> failures)
     {
+        if (Environment.GetEnvironmentVariable("BINGLAN_UI_TEST_FILTER") is { Length: > 0 } filter
+            && !name.Contains(filter, StringComparison.Ordinal)) return;
         try
         {
             test();

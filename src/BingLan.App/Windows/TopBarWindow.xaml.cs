@@ -1546,6 +1546,20 @@ public sealed partial class TopBarWindow : Window
         : _state.SearchFollowCardLook ? DesktopStyleRules.Dock(_style)
         : DesktopStyleRules.CustomDock(_state.SearchSurfaceColor, _state.SearchSurfaceOpacity);
 
+    // Reading and command surfaces need their own opaque paint: the input can be
+    // almost transparent, so its text colour cannot determine flyout contrast.
+    private DockGlass SearchFlyoutGlass
+    {
+        get
+        {
+            var color = (Color)ColorConverter.ConvertFromString(SearchGlass.Surface);
+            var light = (0.2126d * color.R + 0.7152d * color.G + 0.0722d * color.B) / 255d > 0.6d;
+            return light
+                ? new DockGlass("#F3F7FC", "#C6D5E5", "#20364D")
+                : new DockGlass("#202C3B", "#536477", "#F0F5FC");
+        }
+    }
+
     private void ApplySearchAppearance()
     {
         if (_searchHost is not { } host || _searchBox is not { } box) return;
@@ -1562,9 +1576,22 @@ public sealed partial class TopBarWindow : Window
         _searchWindow?.ApplyAppearance(glass);
         if (_searchCard is { } card)
         {
-            card.Background = FrozenBrush(glass.Surface);
-            card.BorderBrush = FrozenBrush(glass.Border);
+            var flyoutGlass = SearchFlyoutGlass;
+            card.Background = FrozenBrush(flyoutGlass.Surface);
+            card.BorderBrush = FrozenBrush(flyoutGlass.Border);
             card.CornerRadius = new CornerRadius(_searchWindow is null ? 10d : _state.SearchCornerRadius);
+            if (_searchRows is { } rows)
+            {
+                foreach (var text in rows.Children.OfType<TextBlock>())
+                    text.Foreground = FrozenBrush(flyoutGlass.RunningDot);
+                foreach (var row in _searchRowBorders)
+                {
+                    if (row.Child is DockPanel { Children: var children }
+                        && children.OfType<DockPanel>().FirstOrDefault() is { } texts)
+                        foreach (var text in texts.Children.OfType<TextBlock>())
+                            text.Foreground = FrozenBrush(flyoutGlass.RunningDot);
+                }
+            }
         }
     }
 
@@ -1683,7 +1710,7 @@ public sealed partial class TopBarWindow : Window
                 }
                 _searchScope ??= new TextBlock
                 {
-                    Foreground = _searchForeground, Opacity = 0.6, FontSize = 11,
+                    Foreground = FrozenBrush(SearchFlyoutGlass.RunningDot), Opacity = 0.72, FontSize = 11,
                     Margin = new Thickness(12, 6, 12, 2), IsHitTestVisible = false
                 };
                 _searchScope.Text = scope ?? string.Empty;
@@ -1725,8 +1752,8 @@ public sealed partial class TopBarWindow : Window
             rows.Children.Add(new TextBlock
             {
                 Text = $"没有与“{query}”匹配的结果",
-                Foreground = _searchForeground,
-                Opacity = 0.65,
+                Foreground = FrozenBrush(SearchFlyoutGlass.RunningDot),
+                Opacity = 0.72,
                 FontSize = 12,
                 Margin = new Thickness(12, 6, 12, 6)
             });
@@ -1744,7 +1771,7 @@ public sealed partial class TopBarWindow : Window
         }
         _searchScope = new TextBlock
             {
-                Text = scope ?? string.Empty, Foreground = _searchForeground, Opacity = 0.6, FontSize = 11,
+                Text = scope ?? string.Empty, Foreground = FrozenBrush(SearchFlyoutGlass.RunningDot), Opacity = 0.72, FontSize = 11,
                 Margin = new Thickness(12, 6, 12, 2), IsHitTestVisible = false
             };
         rows.Children.Add(_searchScope);
@@ -1763,7 +1790,7 @@ public sealed partial class TopBarWindow : Window
         var name = new TextBlock
         {
             Text = candidate.DisplayName,
-            Foreground = _searchForeground,
+            Foreground = FrozenBrush(SearchFlyoutGlass.RunningDot),
             FontSize = 13,
             TextTrimming = TextTrimming.CharacterEllipsis,
             VerticalAlignment = VerticalAlignment.Center
@@ -1771,8 +1798,8 @@ public sealed partial class TopBarWindow : Window
         var detail = new TextBlock
         {
             Text = $"{KindLabel(candidate.Kind)} · {TopBarSearchRules.FormatLocation(candidate.Path)}",
-            Foreground = _searchForeground,
-            Opacity = 0.6d,
+            Foreground = FrozenBrush(SearchFlyoutGlass.RunningDot),
+            Opacity = 0.72d,
             FontSize = 11,
             TextTrimming = TextTrimming.CharacterEllipsis,
             VerticalAlignment = VerticalAlignment.Center
@@ -1931,13 +1958,8 @@ public sealed partial class TopBarWindow : Window
         double horizontalOffset,
         double verticalOffset)
     {
-        var glass = SearchGlass;
-        var surfaceColor = (Color)ColorConverter.ConvertFromString(glass.Surface);
-        if (surfaceColor.A < 242)
-        {
-            surfaceColor.A = 242;
-        }
-        var surfaceBrush = CreateFrozenColorBrush(surfaceColor);
+        var glass = SearchFlyoutGlass;
+        var surfaceBrush = FrozenBrush(glass.Surface);
         var borderBrush = FrozenBrush(glass.Border);
 
         var borderFactory = new FrameworkElementFactory(typeof(Border));
@@ -1960,7 +1982,8 @@ public sealed partial class TopBarWindow : Window
             VerticalOffset = verticalOffset,
             Background = surfaceBrush,
             BorderBrush = borderBrush,
-            Foreground = _searchForeground,
+            Foreground = FrozenBrush(glass.RunningDot),
+            MinWidth = 244,
             HasDropShadow = true,
             Template = new ControlTemplate(typeof(ContextMenu))
             {
@@ -1978,7 +2001,8 @@ public sealed partial class TopBarWindow : Window
         var borderFactory = new FrameworkElementFactory(typeof(Border), "ItemBorder");
         borderFactory.SetValue(Border.BackgroundProperty, Brushes.Transparent);
         borderFactory.SetValue(Border.CornerRadiusProperty, new CornerRadius(5));
-        borderFactory.SetValue(Border.PaddingProperty, new Thickness(10, 5, 10, 5));
+        borderFactory.SetValue(Border.PaddingProperty, new Thickness(12, 7, 12, 7));
+        borderFactory.SetValue(FrameworkElement.MinHeightProperty, 34d);
         borderFactory.SetValue(FrameworkElement.MarginProperty, new Thickness(0, 1, 0, 1));
 
         var dockFactory = new FrameworkElementFactory(typeof(DockPanel));
@@ -1988,7 +2012,7 @@ public sealed partial class TopBarWindow : Window
             gestureFactory.SetValue(DockPanel.DockProperty, System.Windows.Controls.Dock.Right);
             gestureFactory.SetValue(TextBlock.TextProperty, new TemplateBindingExtension(MenuItem.InputGestureTextProperty));
             gestureFactory.SetValue(TextBlock.ForegroundProperty, new TemplateBindingExtension(System.Windows.Controls.Control.ForegroundProperty));
-            gestureFactory.SetValue(UIElement.OpacityProperty, 0.5d);
+            gestureFactory.SetValue(UIElement.OpacityProperty, 0.72d);
             gestureFactory.SetValue(TextBlock.FontSizeProperty, 11d);
             gestureFactory.SetValue(FrameworkElement.MarginProperty, new Thickness(18, 0, 0, 0));
             gestureFactory.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
@@ -2026,8 +2050,8 @@ public sealed partial class TopBarWindow : Window
         {
             Header = title,
             InputGestureText = gestureText ?? string.Empty,
-            Foreground = _searchForeground,
-            FontSize = 12,
+            Foreground = FrozenBrush(SearchFlyoutGlass.RunningDot),
+            FontSize = 13,
             IsEnabled = isEnabled,
             Cursor = isEnabled ? Cursors.Hand : Cursors.Arrow,
             Template = template
@@ -2222,7 +2246,7 @@ public sealed partial class TopBarWindow : Window
 
         var rows = new StackPanel();
         var flyoutWidth = _searchWindow?.ActualWidth > 0 ? _searchWindow.ActualWidth : SearchFlyoutWidth;
-        var glass = SearchGlass;
+        var glass = SearchFlyoutGlass;
         var card = new Border
         {
             VerticalAlignment = VerticalAlignment.Top,
