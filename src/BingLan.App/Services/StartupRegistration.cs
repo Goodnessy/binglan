@@ -8,7 +8,7 @@ namespace BingLan.App.Services;
 /// </summary>
 internal sealed class StartupRegistration(string executablePath, bool canModify)
 {
-    internal const string ValueName = "BingLan";
+    internal const string ValueName = "BingLanDock";
     private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
     private readonly string _command = $"\"{executablePath}\"";
 
