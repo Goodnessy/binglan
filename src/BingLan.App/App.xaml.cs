@@ -7,8 +7,8 @@ public partial class App : System.Windows.Application
 {
     public const string SuppressCoordinatorStartupSwitch =
         "BingLan.SuppressCoordinatorStartupForTests";
-    private const string ProductionInstanceName = "Local\\BingLan.Desktop.Production";
-    private const string InteractiveQaInstanceName = "Local\\BingLan.Desktop.InteractiveQa";
+    private const string ProductionInstanceName = "Local\\BingLan.DockPersonal.Production";
+    private const string InteractiveQaInstanceName = "Local\\BingLan.DockPersonal.InteractiveQa";
     public const string WaitForPreviousInstanceSwitch = "--wait-for-previous";
     private static readonly TimeSpan PreviousInstanceTimeout = TimeSpan.FromSeconds(15);
 
@@ -42,8 +42,10 @@ public partial class App : System.Windows.Application
             "--interactive-qa",
             StringComparer.OrdinalIgnoreCase);
         var dataDirectory = interactiveQa
-            ? Path.Combine(Path.GetTempPath(), "BingLanWidgets-InteractiveQa")
-            : null;
+            ? Path.Combine(Path.GetTempPath(), "BingLanDock-InteractiveQa")
+            : Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "BingLanDock");
         if (e.Args.Contains("--restore-taskbar", StringComparer.OrdinalIgnoreCase))
         {
             // Used by an uninstaller or by hand: undo taskbar and desktop icon changes
@@ -66,7 +68,7 @@ public partial class App : System.Windows.Application
             Shutdown();
             return;
         }
-        _coordinator = new WidgetCoordinator(interactiveQa, dataDirectory, showOnboarding: true);
+        _coordinator = new WidgetCoordinator(interactiveQa, dataDirectory, showOnboarding: false, dockOnly: true);
         _coordinator.Start();
         // Once running, one failed action (a shell call, a damaged file) is logged and
         // reported instead of closing every card; startup failures still end the process.
