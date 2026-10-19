@@ -53,6 +53,78 @@ internal sealed class WindowCatalog
         return windows;
     }
 
+    /// <summary>
+    /// Searches only on a pinned-icon click. Hidden windows must never be fed
+    /// into the ordinary running-app inventory, which would fill the Dock with
+    /// background services and invisible helper windows.
+    /// </summary>
+    internal TrackedWindow? FindRestorableHiddenWindow(DockPinnedApp pinned)
+    {
+        var shell = DockNativeMethods.GetShellWindow();
+        var identities = new Dictionary<uint, ProcessIdentity>();
+        var candidates = new List<(TrackedWindow Window, bool AppWindow)>();
+
+        DockNativeMethods.EnumWindows((window, _) =>
+        {
+            if (window == 0 || window == shell || DockNativeMethods.IsWindowVisible(window))
+            {
+                return true;
+            }
+
+            var extendedStyle = (long)NativeMethods.GetWindowLongPtr(window, NativeMethods.GwlExStyle);
+            var appWindow = (extendedStyle & NativeMethods.WsExAppWindow) != 0;
+            var toolWindow = (extendedStyle & (NativeMethods.WsExToolWindow | DockNativeMethods.WsExNoActivate)) != 0;
+            var rootOwner = DockNativeMethods.GetAncestor(window, DockNativeMethods.GaRootOwner);
+            if (toolWindow || rootOwner != window)
+            {
+                return true;
+            }
+
+            var isCloaked = DockNativeMethods.DwmGetWindowAttribute(
+                window, DockNativeMethods.DwmwaCloaked, out int cloaked, sizeof(int)) == 0 && cloaked != 0;
+            if (isCloaked)
+            {
+                return true;
+            }
+
+            DockNativeMethods.GetWindowThreadProcessId(window, out var processId);
+            if (processId == 0 || processId == Environment.ProcessId)
+            {
+                return true;
+            }
+
+            if (!identities.TryGetValue(processId, out var identity))
+            {
+                identity = ResolveProcessIdentity(processId);
+                identities.Add(processId, identity);
+            }
+
+            var candidate = new TrackedWindow(
+                window, processId, GetTitle(window),
+                TryGetWindowAppUserModelId(window) ?? identity.AppUserModelId,
+                identity.ExecutablePath, false, false);
+
+            if (DockHiddenWindowRecoveryRules.CanRecover(
+                pinned, candidate, isVisible: false, hasOwner: false,
+                isToolWindow: false, isCloaked: false, hasAppWindowStyle: appWindow))
+            {
+                candidates.Add((candidate, appWindow));
+            }
+
+            return true;
+        }, 0);
+
+        // Prefer a named main window over hidden helper windows; a hidden
+        // WS_EX_APPWINDOW main surface is still eligible when its title is empty.
+        return candidates
+            .OrderByDescending(candidate => string.Equals(
+                candidate.Window.Title, pinned.DisplayName, StringComparison.OrdinalIgnoreCase))
+            .ThenByDescending(candidate => !string.IsNullOrWhiteSpace(candidate.Window.Title))
+            .ThenByDescending(candidate => candidate.AppWindow)
+            .Select(candidate => candidate.Window)
+            .FirstOrDefault();
+    }
+
     private static nint GetRootOwnerOrSelf(nint window)
     {
         if (window == 0)
