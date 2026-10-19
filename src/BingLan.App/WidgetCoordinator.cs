@@ -1119,7 +1119,7 @@ public sealed class WidgetCoordinator : IDisposable
                     }
                 },
                 ExitApp = Exit,
-                Updater = _updater,
+                Updater = _dockOnly ? null : _updater,
                 ApplyGlass = ApplyGlass,
                 ImportTaskbarPins = () =>
                 {
@@ -1140,6 +1140,10 @@ public sealed class WidgetCoordinator : IDisposable
             }
         };
         _settingsWindow = settings;
+        if (_dockOnly)
+        {
+            settings.EnableDockOnlyMode();
+        }
         if (target is not null)
         {
             settings.ShowWidgetSettings(target);
