@@ -27,6 +27,7 @@ Run("AppBar 预留、释放与重建路径", TestAppBarReservation);
 Run("最大化让出预留空间的判定规则", TestDockVacateRules);
 Run("固定应用身份键规则", TestDockPinIdentityKey);
 Run("固定应用与运行分组匹配规则", TestDockPinMatches);
+Run("托盘隐藏窗口恢复候选必须匹配原应用且排除工具窗口", TestHiddenWindowRecoveryRules);
 Run("可执行文件固定项优先匹配普通窗口分组", TestExecutablePinPrefersPlainGroup);
 Run("从运行分组创建固定项", TestDockPinCreateFromGroup);
 Run("从可执行文件创建固定项", TestDockPinCreateFromExecutable);
@@ -758,6 +759,62 @@ static void TestDockPinMatches()
     Assert(
         DockPinRules.Matches(exePinned, aumidKeyedGroup),
         "可执行文件固定的应用应匹配身份键为 AUMID 但窗口共享同一可执行文件的分组");
+}
+
+static void TestHiddenWindowRecoveryRules()
+{
+    var pinned = new DockPinnedApp
+    {
+        DisplayName = "微信",
+        ExecutablePath = @"C:\\Apps\\Weixin\\Weixin.exe"
+    };
+    var hiddenMain = Window(101, 320, "微信", null, @"C:\\Apps\\Weixin\\Weixin.exe");
+    var otherApp = Window(102, 321, "聊天", null, @"C:\\Apps\\Other\\Other.exe");
+
+    Assert(
+        DockHiddenWindowRecoveryRules.CanRecover(
+            pinned, hiddenMain, false, false, false, false, false),
+        "同一可执行文件的隐藏主窗口应该可恢复");
+    Assert(
+        !DockHiddenWindowRecoveryRules.CanRecover(
+            pinned, hiddenMain, true, false, false, false, false),
+        "可见窗口应该交给原运行窗口切换逻辑");
+    Assert(
+        !DockHiddenWindowRecoveryRules.CanRecover(
+            pinned, hiddenMain, false, true, false, false, false),
+        "拥有者窗口不应该被误恢复");
+    Assert(
+        !DockHiddenWindowRecoveryRules.CanRecover(
+            pinned, hiddenMain, false, false, true, false, false),
+        "隐藏工具窗口不应该被误恢复");
+    Assert(
+        !DockHiddenWindowRecoveryRules.CanRecover(
+            pinned, hiddenMain, false, false, false, true, false),
+        "被 DWM cloaking 的窗口不能当成托盘主窗口");
+    Assert(
+        !DockHiddenWindowRecoveryRules.CanRecover(
+            pinned, otherApp, false, false, false, false, true),
+        "后台其他应用即使有主窗口样式也不能恢复");
+
+    var unnamed = hiddenMain with { Title = "" };
+    Assert(
+        !DockHiddenWindowRecoveryRules.CanRecover(
+            pinned, unnamed, false, false, false, false, false),
+        "没有标题和主窗口样式的隐藏窗口应被排除");
+    Assert(
+        DockHiddenWindowRecoveryRules.CanRecover(
+            pinned, unnamed, false, false, false, false, true),
+        "明确标记为 AppWindow 的无标题主窗口可被恢复");
+
+    var pinnedWebApp = new DockPinnedApp
+    {
+        AppUserModelId = "Contoso.ChatApp",
+        ExecutablePath = @"C:\\Apps\\Weixin\\Weixin.exe"
+    };
+    Assert(
+        !DockHiddenWindowRecoveryRules.CanRecover(
+            pinnedWebApp, hiddenMain, false, false, false, false, true),
+        "带 AppUserModelId 的固定项不能只靠 exe 路径恢复其他窗口");
 }
 
 static void TestExecutablePinPrefersPlainGroup()
