@@ -39,6 +39,28 @@ internal static class WindowCommandService
     internal static WindowCommandResult Focus(TrackedWindow window) =>
         Focus(window, DockNativeMethods.IsIconic(window.Handle), window.Title);
 
+    /// <summary>
+    /// Try to revive a hidden main window instead of launching a second login
+    /// instance. This is deliberately separate from explicit new-instance actions.
+    /// </summary>
+    internal static WindowCommandResult RestoreHidden(TrackedWindow window)
+    {
+        if (!DockNativeMethods.ShowWindowAsync(window.Handle, DockNativeMethods.SwRestore))
+        {
+            return new WindowCommandResult(false, "未能恢复后台窗口，请从系统托盘重新打开");
+        }
+
+        // Windows may refuse foreground activation; the request to show the
+        // existing window still succeeded. Do not blindly launch another copy.
+        if (DockNativeMethods.SetForegroundWindow(window.Handle))
+        {
+            return new WindowCommandResult(true, "已请求恢复后台窗口");
+        }
+
+        return new WindowCommandResult(
+            true, "已请求恢复后台窗口；如仍未显示，请从系统托盘打开");
+    }
+
     internal static WindowCommandResult Launch(DockPinnedApp app)
     {
         if (app.AppUserModelId is not null)
