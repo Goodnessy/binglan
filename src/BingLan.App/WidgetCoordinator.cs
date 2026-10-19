@@ -60,6 +60,7 @@ public sealed class WidgetCoordinator : IDisposable
     private bool _saveFailureShown;
     private readonly string[] _launchArguments;
     private readonly bool _showOnboarding;
+    private readonly bool _dockOnly;
     private AppState _state;
     private SettingsWindow? _settingsWindow;
     private bool _isExiting;
@@ -74,15 +75,29 @@ public sealed class WidgetCoordinator : IDisposable
     public WidgetCoordinator(
         bool interactiveQa = false,
         string? dataDirectory = null,
-        bool showOnboarding = false)
+        bool showOnboarding = false,
+        bool dockOnly = false)
     {
-        _showOnboarding = showOnboarding;
+        _dockOnly = dockOnly;
+        _showOnboarding = showOnboarding && !dockOnly;
         _launchArguments = interactiveQa ? ["--interactive-qa"] : [];
         _startup = new StartupRegistration(
             Environment.ProcessPath ?? string.Empty,
-            canModify: dataDirectory is null && Environment.ProcessPath is not null);
+            canModify: (dataDirectory is null || dockOnly) && Environment.ProcessPath is not null);
         _store = new LocalStateStore(dataDirectory);
+        var freshState = !File.Exists(_store.StatePath);
         _state = _store.Load();
+        if (dockOnly)
+        {
+            // Use a distinct local profile. The original BingLan desktop app
+            // keeps all of its components, configuration and pinned shortcuts.
+            if (freshState)
+            {
+                _state.Dock.IsEnabled = true;
+            }
+            _state.TopBar.IsEnabled = false;
+            _state.CleanDesktopEnabled = false;
+        }
         _performanceSampler = new WindowsPerformanceSamplingService();
         _weatherService = new WeatherService();
         _citySearchService = new CityLookupService();
@@ -156,6 +171,8 @@ public sealed class WidgetCoordinator : IDisposable
     public void Start()
     {
         _trayIcon.Visible = true;
+        if (!_dockOnly)
+        {
         var informationVisible = HasVisibleInformationComponent();
         foreach (var information in _state.InformationWidgets.ToList())
         {
@@ -204,6 +221,7 @@ public sealed class WidgetCoordinator : IDisposable
         // the mapping watcher, as do new desktop items through the import watcher. All of
         // it only when the user opted in to file-box automation.
         ApplyFileBoxAutomation();
+        }
         StartShellModulesAsync().ContinueWith(
             task => StartupLog.Write($"启动未完成：{task.Exception?.GetBaseException().Message}"),
             CancellationToken.None,
@@ -214,8 +232,11 @@ public sealed class WidgetCoordinator : IDisposable
         _fullScreenWatcher.Changed += UpdateSamplingMode;
         _fullScreenWatcher.Changed += () => _cornerReveal.SetSuspended(_fullScreenWatcher.IsFullScreenInFront);
         _fullScreenWatcher.Start();
-        _desktopSurfaceWatcher.Changed += OnDesktopSurfaceChanged;
-        _desktopSurfaceWatcher.Start();
+        if (!_dockOnly)
+        {
+            _desktopSurfaceWatcher.Changed += OnDesktopSurfaceChanged;
+            _desktopSurfaceWatcher.Start();
+        }
         SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
         WindowScreenRecovery.LayoutChanged += OnDisplayLayoutChanged;
         SaveNow();
@@ -2185,6 +2206,23 @@ public sealed class WidgetCoordinator : IDisposable
     private Forms.NotifyIcon BuildTrayIcon()
     {
         var menu = new Forms.ContextMenuStrip();
+        if (_dockOnly)
+        {
+            menu.Items.Add("Dock 设置…", null, (_, _) => OpenSettings("Dock"));
+            menu.Items.Add("任务栏设置…", null, (_, _) => OpenSettings("Taskbar"));
+            menu.Items.Add("打开数据目录", null, (_, _) => OpenDataDirectory());
+            menu.Items.Add(new Forms.ToolStripSeparator());
+            menu.Items.Add("退出", null, (_, _) => Exit());
+
+            var dockTray = new Forms.NotifyIcon
+            {
+                Text = "冰蓝 Dock",
+                Icon = LoadApplicationIcon(),
+                ContextMenuStrip = menu
+            };
+            dockTray.DoubleClick += (_, _) => OpenSettings("Dock");
+            return dockTray;
+        }
         menu.Items.Add(
             "一键整理桌面",
             null,
