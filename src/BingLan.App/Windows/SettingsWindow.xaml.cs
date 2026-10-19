@@ -959,6 +959,24 @@ public partial class SettingsWindow : Window
         }
     }
 
+    /// <summary>
+    /// Personal Dock edition: keep Dock, optional native taskbar controls and
+    /// general settings accessible without exposing unused desktop card modules.
+    /// The original SettingsWindow remains intact for existing UI tests.
+    /// </summary>
+    internal void EnableDockOnlyMode()
+    {
+        Title = "冰蓝 Dock 设置";
+        foreach (var item in SettingsNavigationList.Items.OfType<ListBoxItem>())
+        {
+            if (item.Tag is string page && page is not ("Dock" or "Taskbar" or "General"))
+            {
+                item.Visibility = Visibility.Collapsed;
+            }
+        }
+        SelectNavigationPage("Dock");
+    }
+
     internal void ShowSettingsPage(string page) => SelectNavigationPage(page);
 
     internal void RefreshDesktopExperience() => LoadDesktopExperience();
