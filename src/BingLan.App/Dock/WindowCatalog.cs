@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using BingLan.App.Interop;
 using BingLan.Core.Dock;
+using BingLan.Core.Models;
 
 namespace BingLan.App.Dock;
 
@@ -88,7 +89,7 @@ internal sealed class WindowCatalog
             }
 
             DockNativeMethods.GetWindowThreadProcessId(window, out var processId);
-            if (processId == 0 || processId == Environment.ProcessId)
+            if (processId == 0 || processId == (uint)Environment.ProcessId)
             {
                 return true;
             }
