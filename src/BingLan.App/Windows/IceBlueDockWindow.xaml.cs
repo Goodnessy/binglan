@@ -534,10 +534,24 @@ public partial class IceBlueDockWindow : Window
 
     private void Invoke(DockItem item)
     {
-        var result = item.Group is not null
-            ? WindowCommandService.Toggle(item.Group)
-            : WindowCommandService.Launch(item.Pinned!);
-        Report(result);
+        if (item.Group is not null)
+        {
+            Report(WindowCommandService.Toggle(item.Group));
+            return;
+        }
+
+        var pinned = item.Pinned!;
+        var hidden = _catalog.FindRestorableHiddenWindow(pinned);
+        if (hidden is not null)
+        {
+            // A normal click resumes the existing app. Shift-click, middle-click
+            // and the "new instance" menu retain their explicit launch behavior.
+            Report(WindowCommandService.RestoreHidden(hidden));
+            RefreshWindows();
+            return;
+        }
+
+        Report(WindowCommandService.Launch(pinned));
     }
 
     private void LaunchNewInstance(DockItem item, string name)
